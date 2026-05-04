@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+
+# Model weights (large binary files — document in README instead)
+*.pt
+*.onnx
+*.engine
+
+# Data (video files, sequences — too large for git)
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Rerun recordings
+*.rrd
+
+# OS
+.DS_Store
+Thumbs.db
