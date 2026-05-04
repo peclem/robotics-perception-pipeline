@@ -1,0 +1,145 @@
+# =============================================================================
+# Detector configuration
+# =============================================================================
+detector:
+  # Model — 'yolov8n.pt' downloads ~6 MB on first run to ~/.config/ultralytics/
+  # Options: yolov8n / yolov8s / yolov8m / yolov8l / yolov8x (n=fastest, x=most accurate)
+  # Use an absolute path to load a local fine-tuned checkpoint.
+  model: "yolov8n.pt"
+
+  # Confidence threshold — detections below this are discarded before the tracker.
+  # Lower = more detections but more false positives entering the tracker.
+  # Higher = cleaner input but risks losing low-contrast objects.
+  # ByteTrack uses a second pass at ~0.1 for occlusion recovery (Step 5).
+  confidence_threshold: 0.35
+
+  # NMS IoU threshold — boxes with IoU above this are suppressed.
+  # 0.45 is the Ultralytics default. Lower reduces duplicate detections.
+  iou_threshold: 0.45
+
+  # Device — 'cuda:0' for your 4070Ti, 'cpu' for CI/testing
+  device: "cuda:0"
+
+  # fp16 inference — ~2x speedup on Ada Lovelace (4070Ti) vs fp32.
+  # Automatically disabled on CPU. Safe for YOLOv8 — Ultralytics validates this.
+  half_precision: true
+
+  # Class filter — null = detect all COCO classes (80 total).
+  # Example: [0] = person only.  [0, 2, 7] = person + car + truck.
+  # null is correct for a general-purpose perception system.
+  class_filter: null
+
+  # Hard cap on detections returned per frame.
+  max_detections: 100
+
+  # Inference resolution (square). 640 is YOLO default.
+  # Smaller (e.g. 320) = faster but lower accuracy on small objects.
+  img_size: 640
+
+# =============================================================================
+# Tracker configuration
+# =============================================================================
+tracker:
+  # Confidence threshold dividing high and low detection pools.
+  # High-confidence detections: primary association + create new tracks.
+  # Low-confidence detections: rescue association only, never create tracks.
+  high_thresh: 0.50
+
+  # Minimum confidence to enter the low-confidence rescue pool.
+  # Detections below this are discarded — pure noise.
+  low_thresh: 0.10
+
+  # Minimum confidence to initialise a new track.
+  # Typically equals high_thresh. Set higher to reduce false track births.
+  new_track_thresh: 0.50
+
+  # Minimum IoU to accept a track-detection match.
+  # Cost threshold = 1 - iou_threshold.
+  # Lower = more permissive matching (risk: wrong assignments).
+  # Higher = stricter matching (risk: missed associations under occlusion).
+  iou_threshold: 0.30
+
+  # Frames a LOST track survives without a detection before removal.
+  # At 30fps: max_age=30 → 1 second of memory.
+  # Increase for slow-moving scenes. Decrease in crowded scenes.
+  max_age: 30
+
+  # Detections needed to promote TENTATIVE → CONFIRMED.
+  # min_hits=1: confirm immediately (aggressive, low latency).
+  # min_hits=3: require 3 frames (conservative, fewer false tracks).
+  min_hits: 1
+
+# =============================================================================
+# Kalman Filter configuration
+# =============================================================================
+kalman_filter:
+
+  # Initial covariance — how uncertain we are about the state at birth.
+  # High p_velocity: we observed position directly but have no velocity
+  # information from a single detection. The filter will estimate velocity
+  # from subsequent position observations.
+  initial_covariance:
+    p_position: 10.0     # pixels²  — moderate uncertainty on cx, cy, w, h
+    p_size: 10.0
+    p_velocity: 100.0    # pixels²/s² — high uncertainty on vx, vy, vw, vh
+
+  # Process noise — how much can the object deviate from constant velocity?
+  # Larger values = filter trusts measurements more, responds faster to
+  # manoeuvres but produces noisier estimates.
+  # These are multiplied by dt in _build_Q().
+  process_noise:
+    q_position: 1.0      # pixels²/s  — center drift
+    q_size: 1.0          # pixels²/s  — size drift
+    q_velocity: 0.1      # pixels²/s³ — velocity drift
+    q_vel_size: 0.02      # pixels²/s³ — size-velocity drift
+
+  # Measurement noise — how much do we trust the detector output?
+  # R is scaled by 1/confidence when confidence is provided,
+  # so a low-confidence detection gets a larger R (less trusted).
+  measurement_noise:
+    r_center: 1.0        # pixels²  — cx, cy measurement noise
+    r_size: 1.0          # pixels²  — w, h measurement noise (detector is
+                         #            less precise on box boundaries)
+
+world_model:
+  history_buffer_size: 60      # frames of position history per object
+  max_disappeared: 30          # frames before object is removed from scene graph
+
+visualization:
+  backend: "opencv"            # "opencv" or "rerun"
+  show_covariance: true
+  show_velocity: true
+  show_track_id: true
+  record: false
+  output_path: "data/output.mp4"
+
+# =============================================================================
+# Camera configuration
+# =============================================================================
+camera:
+  # Live webcam settings
+  device_index: 0
+  width: 1280
+  height: 720
+  fps: 30
+
+  # Path to calibration file. Set to null to use synthetic defaults.
+  # Run scripts/calibrate_camera.py to generate this.
+  intrinsics_path: "config/camera_intrinsics.yaml"
+
+  # Video replay settings (used when source: "video")
+  video_path: "data/test_clip.mp4"
+  loop: false
+  playback_fps: null          # null = as fast as possible; set to 30 for real-time
+
+# =============================================================================
+# Synthetic camera (for tests CI and WSL)
+# =============================================================================
+synthetic_camera:
+  source: "data/sample.mp4"
+  width: 640
+  height: 480
+  num_frames: 300
+  fps: 30.0
+  num_objects: 3
+  seed: 42
