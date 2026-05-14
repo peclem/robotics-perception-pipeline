@@ -200,16 +200,19 @@ class KalmanFilterConfig:
 
 @dataclass
 class VisualizationConfig:
-    rerun_enabled:           bool  = True
-    rerun_app_id:            str   = "robotics_perception_pipeline"
-    show_bboxes:             bool  = True
-    show_track_ids:          bool  = True
-    show_velocity:           bool  = True
-    show_covariance_ellipse: bool  = True
-    show_nis:                bool  = False
-    show_stats_overlay:      bool  = True
-    bbox_thickness:          int   = 2
-    velocity_arrow_scale:    float = 0.5
+    rerun_enabled:           bool         = True
+    rerun_app_id:            str          = "robotics_perception_pipeline"
+    rerun_host:              str          = "auto"          # ← add
+    rerun_port:              int          = 9876            # ← add
+    rerun_save_path:         Optional[str]= None            # ← add
+    show_bboxes:             bool         = True
+    show_track_ids:          bool         = True
+    show_velocity:           bool         = True
+    show_covariance_ellipse: bool         = True
+    show_nis:                bool         = False
+    show_stats_overlay:      bool         = True
+    bbox_thickness:          int          = 2
+    velocity_arrow_scale:    float        = 0.5
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -583,6 +586,9 @@ def _build(raw: dict) -> PipelineConfig:
         visualization=VisualizationConfig(
             rerun_enabled=           bool(vis.get("rerun_enabled", True)),
             rerun_app_id=            str(vis.get("rerun_app_id", "robotics_perception_pipeline")),
+            rerun_host=              str(vis.get("rerun_host", "auto")),
+            rerun_port=              int(vis.get("rerun_port", 9876)),
+            rerun_save_path=         vis.get("rerun_save_path"),
             show_bboxes=             bool(vis.get("show_bboxes", True)),
             show_track_ids=          bool(vis.get("show_track_ids", True)),
             show_velocity=           bool(vis.get("show_velocity", True)),

@@ -150,19 +150,18 @@ kalman_filter:
 # Visualization
 # -----------------------------------------------------------------------------
 visualization:
-  # Rerun viewer must be open on Windows before launch.
-  # Override: RERUN_ENABLED=false python launch.py
   rerun_enabled: true
   rerun_app_id: "robotics_perception_pipeline"
-
-  show_bboxes:             true
-  show_track_ids:          true
-  show_velocity:           true   # KF velocity arrow
-  show_covariance_ellipse: true   # 2σ position uncertainty ellipse
-  show_nis:                false  # NIS value per track (debug)
-  show_stats_overlay:      true   # FPS, det/track counts
-
-  bbox_thickness:       2
+  rerun_host: "auto"        # "auto" = detect Windows host from /etc/resolv.conf
+  rerun_port: 9876
+  rerun_save_path: null     # e.g. "data/recording.rrd" for offline review
+  show_bboxes: true
+  show_track_ids: true
+  show_velocity: true
+  show_covariance_ellipse: true
+  show_nis: false
+  show_stats_overlay: true
+  bbox_thickness: 2
   velocity_arrow_scale: 0.5
 
 

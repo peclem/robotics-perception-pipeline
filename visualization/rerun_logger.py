@@ -1,0 +1,391 @@
+"""
+Rerun.io logger for the robotics perception pipeline.
+Written for rerun-sdk 0.31.4 — verified API surface.
+
+API changes vs older versions
+------------------------------
+connect_tcp()      → connect_grpc()
+Scalar(v)          → Scalars(v)
+set_time_sequence  → set_time("frame_idx", sequence=n)
+set_time_seconds   → set_time("wall_time", duration=t)
+
+Entity hierarchy
+----------------
+world/camera/image          — RGB camera frame
+world/detections/boxes      — raw YOLOv8 output (grey)
+world/tracks/boxes          — confirmed KF-filtered tracks (colour-coded)
+world/tracks/velocity       — KF velocity vectors (Arrows2D)
+world/tracks/covariance     — 2σ position ellipses (LineStrips2D)
+metrics/detect_ms           — detector latency time series
+metrics/track_ms            — tracker latency time series
+metrics/fps                 — pipeline throughput time series
+metrics/n_lost              — lost track count time series
+tracks/{id}/nis             — per-track NIS scalar (show_nis only)
+
+WSL2 → Windows connection
+--------------------------
+Rerun 0.31.4 uses gRPC, not raw TCP.
+The viewer listens on port 9876 by default.
+
+To stream live:
+  1. Open rerun.exe on Windows (it waits for connections)
+  2. python3 launch.py --source video --input data/test_clip.mp4
+
+To save a recording:
+  python3 launch.py --source synthetic --rerun-save data/recording.rrd
+  Then open recording.rrd with rerun.exe on Windows.
+"""
+
+from __future__ import annotations
+
+import colorsys
+import logging
+import math
+from pathlib import Path
+from typing import List
+
+import numpy as np
+
+from perception.camera_interface import CameraFrame
+from perception.config_loader import PipelineConfig
+from perception.detector import Detection
+from tracking.track import Track
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Colour utilities
+# ---------------------------------------------------------------------------
+
+def _track_colour_rgba(track_id: int) -> tuple[int, int, int, int]:
+    """Deterministic RGBA colour from track ID (HSV colour wheel)."""
+    hue = (track_id * 37) % 360 / 360.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 0.95)
+    return (int(r * 255), int(g * 255), int(b * 255), 220)
+
+
+def _ellipse_points(
+    cx: float,
+    cy: float,
+    P2x2: np.ndarray,
+    n_points: int = 36,
+    sigma: float = 2.0,
+) -> np.ndarray:
+    """
+    Compute points along a 2σ covariance ellipse.
+
+    Uses Cholesky decomposition of the 2×2 position covariance submatrix.
+    Returns (n_points+1, 2) float32 array — closed loop.
+    """
+    try:
+        L = np.linalg.cholesky(P2x2 + np.eye(2) * 1e-6)
+    except np.linalg.LinAlgError:
+        L = np.eye(2)
+
+    angles      = np.linspace(0, 2 * math.pi, n_points, endpoint=False)
+    unit_circle = np.stack([np.cos(angles), np.sin(angles)], axis=1)
+    ellipse     = sigma * (unit_circle @ L.T)
+    ellipse[:, 0] += cx
+    ellipse[:, 1] += cy
+
+    return np.vstack([ellipse, ellipse[0]]).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# WSL2 host detection
+# ---------------------------------------------------------------------------
+
+def _resolve_rerun_host(host: str) -> str:
+    """
+    Resolve the Rerun viewer host address.
+    "auto" → parse WSL2 Windows host IP from /etc/resolv.conf.
+    """
+    if host != "auto":
+        return host
+
+    try:
+        with open("/etc/resolv.conf") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("nameserver"):
+                    ip = line.split()[1]
+                    log.debug("WSL2 Windows host IP: %s", ip)
+                    return ip
+    except (FileNotFoundError, IndexError):
+        pass
+
+    log.debug("Could not detect WSL2 host — falling back to 127.0.0.1")
+    return "127.0.0.1"
+
+
+# ---------------------------------------------------------------------------
+# RerunLogger
+# ---------------------------------------------------------------------------
+
+class RerunLogger:
+    """
+    Streams pipeline state to the Rerun.io viewer.
+    Verified for rerun-sdk 0.31.4.
+
+    Degrades gracefully — all log calls are silent no-ops if the
+    viewer is not open or rerun is not installed.
+    """
+
+    def __init__(self, cfg: PipelineConfig) -> None:
+        self._cfg   = cfg
+        self._vis   = cfg.visualization
+        self._rr    = None
+        self._ready = False
+
+    # ------------------------------------------------------------------
+    # Connection
+    # ------------------------------------------------------------------
+
+    def connect(self) -> bool:
+        """
+        Initialise Rerun and connect to viewer or open save file.
+        Returns True if ready to log.
+        """
+        if not self._vis.rerun_enabled:
+            log.info("Rerun.io disabled via config/env.")
+            return False
+
+        try:
+            import rerun as rr
+        except ImportError:
+            log.warning("rerun-sdk not installed. pip install rerun-sdk")
+            return False
+
+        self._rr = rr
+
+        try:
+            rr.init(self._vis.rerun_app_id, spawn=False)
+
+            if self._vis.rerun_save_path:
+                save_path = Path(self._vis.rerun_save_path)
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                rr.save(str(save_path))
+                log.info("Rerun.io → saving to: %s", save_path)
+                log.info(
+                    "Open on Windows: rerun.exe %s", save_path
+                )
+            else:
+                host = _resolve_rerun_host(self._vis.rerun_host)
+                addr = f"rerun+http://{host}:{self._vis.rerun_port}/proxy"
+                rr.connect_grpc(addr)
+                log.info("Rerun.io → streaming to %s", addr)
+                log.info(
+                    "Make sure rerun.exe is open on Windows."
+                )
+
+            self._ready = True
+            return True
+
+        except Exception as exc:
+            log.warning(
+                "Rerun.io connection failed: %s\n"
+                "  → Use --rerun-save data/recording.rrd to save offline.\n"
+                "  → Or set RERUN_ENABLED=false to disable.",
+                exc,
+            )
+            self._ready = False
+            return False
+
+    # ------------------------------------------------------------------
+    # Per-frame logging
+    # ------------------------------------------------------------------
+
+    def log_frame(
+        self,
+        frame:      CameraFrame,
+        detections: List[Detection],
+        tracks:     List[Track],
+    ) -> None:
+        """Log all visual data for one frame."""
+        if not self._ready or self._rr is None:
+            return
+
+        rr = self._rr
+        try:
+            # Timeline — 0.31.4 uses rr.set_time()
+            rr.set_time("frame_idx", sequence=frame.frame_idx)
+            rr.set_time("wall_time", duration=frame.timestamp)
+
+            self._log_image(rr, frame)
+            self._log_detections(rr, detections)
+            self._log_tracks(rr, tracks)
+
+        except Exception as exc:
+            log.debug("Rerun log_frame error (suppressed): %s", exc)
+
+    def _log_image(self, rr, frame: CameraFrame) -> None:
+        rgb = frame.image[:, :, ::-1].copy()
+        try:
+            rr.log("world/camera/image", rr.Image(rgb))
+        except Exception as e:
+            log.debug("Image log failed: %s", e)
+
+    def _log_detections(self, rr, detections: List[Detection]) -> None:
+        if not detections:
+            try:
+                rr.log("world/detections/boxes", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+
+        boxes  = np.array([d.bbox_xyxy for d in detections], dtype=np.float32)
+        labels = [f"{d.class_name} {d.confidence:.2f}" for d in detections]
+        colors = [(160, 160, 160, 180)] * len(detections)
+
+        try:
+            rr.log(
+                "world/detections/boxes",
+                rr.Boxes2D(
+                    array=boxes,
+                    array_format=rr.Box2DFormat.XYXY,
+                    labels=labels,
+                    colors=colors,
+                ),
+            )
+        except Exception as e:
+            log.debug("Detections log failed: %s", e)
+
+    def _log_tracks(self, rr, tracks: List[Track]) -> None:
+        if not tracks:
+            try:
+                rr.log("world/tracks/boxes",      rr.Clear(recursive=False))
+                rr.log("world/tracks/velocity",   rr.Clear(recursive=False))
+                rr.log("world/tracks/covariance", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+
+        boxes  = np.array([t.bbox_xyxy for t in tracks], dtype=np.float32)
+        labels = [f"#{t.track_id} {t.class_name}" for t in tracks]
+        colors = [_track_colour_rgba(t.track_id) for t in tracks]
+
+        try:
+            rr.log(
+                "world/tracks/boxes",
+                rr.Boxes2D(
+                    array=boxes,
+                    array_format=rr.Box2DFormat.XYXY,
+                    labels=labels,
+                    colors=colors,
+                ),
+            )
+        except Exception as e:
+            log.debug("Track boxes log failed: %s", e)
+
+        if self._vis.show_velocity:
+            self._log_velocity_arrows(rr, tracks)
+
+        if self._vis.show_covariance_ellipse:
+            self._log_covariance_ellipses(rr, tracks)
+
+        if self._vis.show_nis:
+            self._log_nis(rr, tracks)
+
+    def _log_velocity_arrows(self, rr, tracks: List[Track]) -> None:
+        scale   = self._vis.velocity_arrow_scale
+        origins = np.array([t.position     for t in tracks], dtype=np.float32)
+        vectors = np.array([t.velocity[:2] * scale for t in tracks], dtype=np.float32)
+        colors  = [_track_colour_rgba(t.track_id) for t in tracks]
+
+        magnitudes = np.linalg.norm(vectors, axis=1)
+        mask = magnitudes > 1.0
+        if not np.any(mask):
+            return
+
+        try:
+            rr.log(
+                "world/tracks/velocity",
+                rr.Arrows2D(
+                    origins=origins[mask],
+                    vectors=vectors[mask],
+                    colors=[colors[i] for i, m in enumerate(mask) if m],
+                ),
+            )
+        except Exception as e:
+            log.debug("Arrows2D log failed: %s", e)
+
+    def _log_covariance_ellipses(self, rr, tracks: List[Track]) -> None:
+        """
+        2σ position uncertainty ellipses as LineStrips2D.
+        Key visual: ellipse shrinks as the KF converges after updates,
+        and grows during predict-only periods (occlusion).
+        """
+        strips = []
+        colors = []
+
+        for track in tracks:
+            P2     = track.covariance[:2, :2]
+            cx, cy = track.position
+            pts    = _ellipse_points(cx, cy, P2, n_points=36, sigma=2.0)
+            strips.append(pts)
+            colors.append(_track_colour_rgba(track.track_id))
+
+        if not strips:
+            return
+
+        try:
+            rr.log(
+                "world/tracks/covariance",
+                rr.LineStrips2D(strips, colors=colors),
+            )
+        except Exception as e:
+            log.debug("LineStrips2D log failed: %s", e)
+
+    def _log_nis(self, rr, tracks: List[Track]) -> None:
+        for track in tracks:
+            if not math.isnan(track.nis):
+                try:
+                    # 0.31.4: Scalars (plural) not Scalar
+                    rr.log(
+                        f"tracks/{track.track_id}/nis",
+                        rr.Scalars(float(track.nis)),
+                    )
+                except Exception as e:
+                    log.debug("NIS log failed track %d: %s", track.track_id, e)
+
+    # ------------------------------------------------------------------
+    # Metrics
+    # ------------------------------------------------------------------
+
+    def log_metrics(
+        self,
+        detect_ms: float,
+        track_ms:  float,
+        fps:       float,
+        n_lost:    int,
+    ) -> None:
+        """Log pipeline performance as Rerun scalar time series."""
+        if not self._ready or self._rr is None:
+            return
+
+        rr = self._rr
+        scalars = {
+            "metrics/detect_ms": detect_ms,
+            "metrics/track_ms":  track_ms,
+            "metrics/fps":       fps,
+            "metrics/n_lost":    float(n_lost),
+        }
+        for path, value in scalars.items():
+            try:
+                # 0.31.4: rr.Scalars (plural)
+                rr.log(path, rr.Scalars(float(value)))
+            except Exception as e:
+                log.debug("Scalars log failed %s: %s", path, e)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        self._ready = False
+        log.debug("RerunLogger closed.")
+
+    @property
+    def is_ready(self) -> bool:
+        return self._ready
