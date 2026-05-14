@@ -1,0 +1,104 @@
+# =============================================================================
+# Robotics Perception Pipeline — CI
+#
+# Runs on every push and pull request to main.
+# Uses CPU-only torch (no GPU available on GitHub runners).
+# Integration tests (real model, real GPU) are excluded via pytest marker.
+#
+# Environment overrides used:
+#   DEVICE=cpu          → detector.device
+#   RERUN_ENABLED=false → disables Rerun.io (no viewer in CI)
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Unit tests (Python 3.10, CPU)
+    runs-on: ubuntu-22.04
+
+    env:
+      DEVICE: cpu
+      RERUN_ENABLED: "false"
+
+    steps:
+      # ---------------------------------------------------------------
+      # 1. Checkout
+      # ---------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------
+      # 2. Set up Python 3.10
+      # ---------------------------------------------------------------
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      # ---------------------------------------------------------------
+      # 3. Install CPU-only PyTorch first
+      #    Must be installed before ultralytics to avoid pulling in
+      #    the CUDA variant as a dependency.
+      # ---------------------------------------------------------------
+      - name: Install CPU-only PyTorch
+        run: |
+          pip install --upgrade pip
+          pip install torch torchvision torchaudio \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      # ---------------------------------------------------------------
+      # 4. Install project dependencies
+      # ---------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          pip install \
+            ultralytics \
+            opencv-python-headless \
+            filterpy \
+            scipy \
+            numpy \
+            pyyaml \
+            pytest \
+            pytest-cov \
+            rerun-sdk
+
+      # ---------------------------------------------------------------
+      # 5. Install package in editable mode
+      #    Makes all submodules importable as perception.X, tracking.X etc.
+      # ---------------------------------------------------------------
+      - name: Install package
+        run: pip install -e .
+
+      # ---------------------------------------------------------------
+      # 6. Run unit tests
+      #    -m "not integration" excludes GPU tests.
+      #    --tb=short keeps failure output readable.
+      #    --cov generates a coverage report.
+      # ---------------------------------------------------------------
+      - name: Run unit tests
+        run: |
+          python -m pytest tests/ \
+            -m "not integration" \
+            -v \
+            --tb=short \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-report=xml
+
+      # ---------------------------------------------------------------
+      # 7. Upload coverage report (optional — free on public repos)
+      # ---------------------------------------------------------------
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false

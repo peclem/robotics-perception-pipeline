@@ -10,6 +10,9 @@ requires-python = ">=3.10"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "integration: requires real hardware (GPU, camera) — skipped in CI",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
