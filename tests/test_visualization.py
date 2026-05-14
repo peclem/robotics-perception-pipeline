@@ -294,12 +294,6 @@ class TestRerunLogger:
     def test_close_always_safe(self, cfg):
         logger = RerunLogger(cfg)
         logger.close()   # before connect — must not raise
-    def test_save_path_creates_directory(self, tmp_path):
-        """Directory creation is pure Python — no Rerun calls needed."""
-        save_path = tmp_path / "nested" / "dir" / "rec.rrd"
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        assert save_path.parent.exists()
-
 class TestWSLHostDetect:
 
     def test_explicit_host_unchanged(self):
