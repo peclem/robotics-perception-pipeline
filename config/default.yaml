@@ -68,7 +68,7 @@ synthetic_camera:
 # Detector (YOLOv8Detector)
 # -----------------------------------------------------------------------------
 detector:
-  model: "yolov8n.pt"
+  model: "runs/detect/mot17_finetune-2/weights/best.pt"
 
   # Absolute floor — nothing below this enters the pipeline.
   # ByteTrack stage-2 rescue threshold is set separately in tracker.low_thresh.
