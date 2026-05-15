@@ -115,7 +115,7 @@ tracker:
   iou_threshold: 0.30
   max_age: 30   # frames a LOST track survives — 30 @ 30fps = 1 second
   min_hits: 1   # hits to promote TENTATIVE → CONFIRMED
-
+  use_ekf: false
 
 # -----------------------------------------------------------------------------
 # Kalman Filter
@@ -145,7 +145,33 @@ kalman_filter:
     r_center: 1.0       # pixels² — cx, cy
     r_size:   1.0       # pixels² — w, h
 
+# -----------------------------------------------------------------------------
+# Extended Kalman Filter (Step 10)
+# -----------------------------------------------------------------------------
+#
+# Drop-in replacement for kalman_filter when tracker.use_ekf: true.
+# Adds turn rate ω to state vector: [cx,cy,w,h,vx,vy,vw,vh,ω]
+#
+# Tune q_omega: larger = faster response to turning objects,
+#               noisier trajectory estimates on straight-line motion.
+# -----------------------------------------------------------------------------
+extended_kalman_filter:
+  initial_covariance:
+    p_position: 10.0
+    p_size:     10.0
+    p_velocity: 100.0
+    p_omega:    1.0      # initial turn rate uncertainty (rad²/s²)
 
+  process_noise:
+    q_position: 1.0
+    q_size:     1.0
+    q_velocity: 0.1
+    q_vel_size: 0.02
+    q_omega:    0.01     # turn rate process noise (rad²/s³)
+
+  measurement_noise:
+    r_center: 1.0
+    r_size:   1.0
 # -----------------------------------------------------------------------------
 # Visualization
 # -----------------------------------------------------------------------------

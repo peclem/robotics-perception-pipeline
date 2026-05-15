@@ -42,7 +42,7 @@ import numpy as np
 
 from perception.detector import Detection
 from state_estimation.kalman_filter import KalmanFilter, KFSnapshot
-
+from state_estimation.extended_kf import ExtendedKalmanFilter
 
 class TrackState(IntEnum):
     TENTATIVE = 1
@@ -85,19 +85,25 @@ class Track:
         cls._id_counter = 0
 
     def __init__(self, detection: Detection, config: dict) -> None:
-        self.track_id: int       = self._next_id()
-        self.state: TrackState   = TrackState.TENTATIVE
-        self.kf: KalmanFilter    = KalmanFilter.from_detection(detection, config)
-        self.n_hits: int         = 1
-        self.n_misses: int       = 0
-        self.age: int            = 1
-        self.score: float        = detection.confidence
-        self.class_id: int       = detection.class_id
-        self.class_name: str     = detection.class_name
-        self.history: list[KFSnapshot] = []
+        self.track_id: int     = self._next_id()
+        self.state: TrackState = TrackState.TENTATIVE
 
-    # ------------------------------------------------------------------
-    # Core operations — called by ByteTracker each frame
+        use_ekf = config.get("tracker", {}).get("use_ekf", False)
+        if use_ekf:
+            self.kf = ExtendedKalmanFilter.from_detection(detection, config)
+        else:
+            self.kf = KalmanFilter.from_detection(detection, config)
+
+        self.n_hits:   int   = 1
+        self.n_misses: int   = 0
+        self.age:      int   = 1
+        self.score:    float = detection.confidence
+        self.class_id: int   = detection.class_id
+        self.class_name: str = detection.class_name
+        self.history:  list  = []
+
+
+    #Core operations — called by ByteTracker each frame
     # ------------------------------------------------------------------
 
     def predict(self, dt: float) -> None:

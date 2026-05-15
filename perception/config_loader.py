@@ -143,7 +143,7 @@ class TrackerConfig:
     iou_threshold:    float = 0.30
     max_age:          int   = 30
     min_hits:         int   = 1
-
+    use_ekf:          bool  = False
     def as_dict(self) -> dict:
         return asdict(self)
 
@@ -197,6 +197,47 @@ class KalmanFilterConfig:
             "measurement_noise":  self.measurement_noise.as_dict(),
         }
 
+@dataclass
+class EKFInitialCovarianceConfig:
+    p_position: float = 10.0
+    p_size:     float = 10.0
+    p_velocity: float = 100.0
+    p_omega:    float = 1.0
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class EKFProcessNoiseConfig:
+    q_position: float = 1.0
+    q_size:     float = 1.0
+    q_velocity: float = 0.1
+    q_vel_size: float = 0.02
+    q_omega:    float = 0.01
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class ExtendedKalmanFilterConfig:
+    initial_covariance: EKFInitialCovarianceConfig = field(
+        default_factory=EKFInitialCovarianceConfig
+    )
+    process_noise:      EKFProcessNoiseConfig      = field(
+        default_factory=EKFProcessNoiseConfig
+    )
+    measurement_noise:  MeasurementNoiseConfig     = field(
+        default_factory=MeasurementNoiseConfig
+    )
+
+    def as_dict(self) -> dict:
+        return {
+            "initial_covariance": self.initial_covariance.as_dict(),
+            "process_noise":      self.process_noise.as_dict(),
+            "measurement_noise":  self.measurement_noise.as_dict(),
+        }
 
 @dataclass
 class VisualizationConfig:
@@ -235,16 +276,16 @@ class PipelineConfig:
     Fully typed pipeline configuration.
     Construct only via load_config() — never directly.
     """
-    pipeline:         PipelineSettings      = field(default_factory=PipelineSettings)
-    camera:           CameraConfig          = field(default_factory=CameraConfig)
-    video:            VideoConfig           = field(default_factory=VideoConfig)
-    synthetic_camera: SyntheticCameraConfig = field(default_factory=SyntheticCameraConfig)
-    detector:         DetectorConfig        = field(default_factory=DetectorConfig)
-    tracker:          TrackerConfig         = field(default_factory=TrackerConfig)
-    kalman_filter:    KalmanFilterConfig    = field(default_factory=KalmanFilterConfig)
-    visualization:    VisualizationConfig   = field(default_factory=VisualizationConfig)
-    benchmark:        BenchmarkConfig       = field(default_factory=BenchmarkConfig)
-
+    pipeline:               PipelineSettings           = field(default_factory=PipelineSettings)
+    camera:                 CameraConfig               = field(default_factory=CameraConfig)
+    video:                  VideoConfig                = field(default_factory=VideoConfig)
+    synthetic_camera:       SyntheticCameraConfig      = field(default_factory=SyntheticCameraConfig)
+    detector:               DetectorConfig             = field(default_factory=DetectorConfig)
+    tracker:                TrackerConfig              = field(default_factory=TrackerConfig)
+    kalman_filter:          KalmanFilterConfig         = field(default_factory=KalmanFilterConfig)
+    visualization:          VisualizationConfig        = field(default_factory=VisualizationConfig)
+    benchmark:              BenchmarkConfig            = field(default_factory=BenchmarkConfig)
+    extended_kalman_filter: ExtendedKalmanFilterConfig = field(default_factory=ExtendedKalmanFilterConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -263,6 +304,7 @@ class PipelineConfig:
             "kalman_filter":    self.kalman_filter.as_dict(),
             "visualization":    self.visualization.as_dict(),
             "benchmark":        self.benchmark.as_dict(),
+            "extended_kalman_filter": self.extended_kalman_filter.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -517,6 +559,10 @@ def _build(raw: dict) -> PipelineConfig:
     mn  = kf.get("measurement_noise", {})
     vis = raw.get("visualization", {})
     b   = raw.get("benchmark", {})
+    ekf = raw.get("extended_kalman_filter", {})
+    ekf_ic = ekf.get("initial_covariance", {})
+    ekf_pn = ekf.get("process_noise", {})
+    ekf_mn = ekf.get("measurement_noise", {})
 
     return PipelineConfig(
         pipeline=PipelineSettings(
@@ -565,6 +611,7 @@ def _build(raw: dict) -> PipelineConfig:
             iou_threshold=    float(t.get("iou_threshold", 0.30)),
             max_age=          int(t.get("max_age", 30)),
             min_hits=         int(t.get("min_hits", 1)),
+            use_ekf=bool(t.get("use_ekf", False)),
         ),
         kalman_filter=KalmanFilterConfig(
             initial_covariance=InitialCovarianceConfig(
@@ -581,6 +628,25 @@ def _build(raw: dict) -> PipelineConfig:
             measurement_noise=MeasurementNoiseConfig(
                 r_center= float(mn.get("r_center", 1.0)),
                 r_size=   float(mn.get("r_size", 1.0)),
+            ),
+        ),
+        extended_kalman_filter=ExtendedKalmanFilterConfig(
+            initial_covariance=EKFInitialCovarianceConfig(
+                p_position= float(ekf_ic.get("p_position", 10.0)),
+                p_size=     float(ekf_ic.get("p_size",     10.0)),
+                p_velocity= float(ekf_ic.get("p_velocity", 100.0)),
+                p_omega=    float(ekf_ic.get("p_omega",    1.0)),
+            ),
+            process_noise=EKFProcessNoiseConfig(
+                q_position= float(ekf_pn.get("q_position", 1.0)),
+                q_size=     float(ekf_pn.get("q_size",     1.0)),
+                q_velocity= float(ekf_pn.get("q_velocity", 0.1)),
+                q_vel_size= float(ekf_pn.get("q_vel_size", 0.02)),
+                q_omega=    float(ekf_pn.get("q_omega",    0.01)),
+            ),
+            measurement_noise=MeasurementNoiseConfig(
+                r_center= float(ekf_mn.get("r_center", 1.0)),
+                r_size=   float(ekf_mn.get("r_size",   1.0)),
             ),
         ),
         visualization=VisualizationConfig(
