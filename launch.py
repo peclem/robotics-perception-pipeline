@@ -33,6 +33,7 @@ from perception.config_loader import load_config, PipelineConfig
 from perception.detector import YOLOv8Detector
 from tracking.tracker import ByteTracker
 from visualization.debug_vis import DebugVisualizer
+from world_model.scene_graph import SceneGraph
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +76,7 @@ class Pipeline:
         self._tracker    = None
         self._visualizer = None
         self._writer     = None
+        self._scene_graph: Optional[SceneGraph] = None
 
     # ------------------------------------------------------------------
     # Public
@@ -123,6 +125,7 @@ class Pipeline:
         )
 
         self._tracker    = ByteTracker(raw)
+        self._scene_graph = SceneGraph(raw)
         self._visualizer = DebugVisualizer(cfg)
         self._visualizer.connect_rerun()
         self._writer     = None
@@ -209,6 +212,12 @@ class Pipeline:
             confirmed_tracks = self._tracker.update(detections, frame)
             t_track          = time.monotonic() - t0
 
+            self._scene_graph.update(
+                confirmed_tracks=confirmed_tracks,
+                lost_tracks=self._tracker.lost_tracks,
+                timestamp=frame.timestamp,
+            )
+
             annotated = self._visualizer.draw(
                 frame=frame,
                 detections=detections,
@@ -243,10 +252,11 @@ class Pipeline:
                     if self._frame_times else 0.0
                 )
                 log.info(
-                    "Frame %4d | dets=%2d | tracks=%2d | lost=%2d | "
+                    "Frame %4d | dets=%2d | tracks=%2d | lost=%2d | sg=%2d | "
                     "det=%.1fms | trk=%.1fms | %.1f FPS",
                     frame_idx,
                     len(detections),
+                    self._scene_graph.n_objects,
                     len(confirmed_tracks),
                     len(self._tracker.lost_tracks),
                     t_detect * 1000,
