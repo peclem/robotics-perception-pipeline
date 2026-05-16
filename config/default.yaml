@@ -1,60 +1,20 @@
-# =============================================================================
-# Robotics Perception Pipeline — master configuration
-# =============================================================================
-#
-# Load with:
-#   from perception.config_loader import load_config
-#   cfg = load_config("config/default.yaml")
-#
-# Environment variable overrides (applied before validation):
-#   DEVICE          → detector.device          e.g. DEVICE=cpu
-#   CONFIDENCE      → detector.confidence_threshold
-#   HIGH_THRESH     → tracker.high_thresh
-#   MAX_AGE         → tracker.max_age
-#   LOG_LEVEL       → pipeline.log_level
-#   RERUN_ENABLED   → visualization.rerun_enabled
-#
-# All spatial units are pixels or pixels/s unless noted.
-# All matrix variances (Q, R, P) are in pixels² or pixels²/s².
-# =============================================================================
-
-
-# -----------------------------------------------------------------------------
-# Pipeline
-# -----------------------------------------------------------------------------
 pipeline:
-  name: "robotics-perception-pipeline"
-  log_level: "INFO"
+  name: robotics-perception-pipeline
+  log_level: INFO
   target_hz: 30
   output_video_path: null
   seed: 42
-
-
-# -----------------------------------------------------------------------------
-# Camera — live webcam (WebcamCamera)
-# -----------------------------------------------------------------------------
 camera:
   device_index: 0
   width: 1280
   height: 720
   fps: 30
-  # null until you run scripts/calibrate_camera.py (Step 12)
   intrinsics_path: null
-
-
-# -----------------------------------------------------------------------------
-# Video file replay (VideoFileCamera)
-# -----------------------------------------------------------------------------
 video:
-  input_path:  "data/test_clip.mp4"
-  output_path: "data/output.mp4"
+  input_path: data/test_clip.mp4
+  output_path: data/output.mp4
   playback_fps: null
   loop: false
-
-
-# -----------------------------------------------------------------------------
-# Synthetic camera (SyntheticCamera — tests and CI)
-# -----------------------------------------------------------------------------
 synthetic_camera:
   width: 640
   height: 480
@@ -62,125 +22,57 @@ synthetic_camera:
   fps: 30.0
   num_objects: 3
   seed: 42
-
-
-# -----------------------------------------------------------------------------
-# Detector (YOLOv8Detector)
-# -----------------------------------------------------------------------------
 detector:
-  model: "runs/detect/mot17_finetune-2/weights/best.pt"
-
-  # Absolute floor — nothing below this enters the pipeline.
-  # ByteTrack stage-2 rescue threshold is set separately in tracker.low_thresh.
-  # Range: (0.0, 1.0)
+  model: runs/detect/mot17_finetune-2/weights/best.pt
   confidence_threshold: 0.25
-
-  # NMS overlap threshold. Range: (0.0, 1.0)
   iou_threshold: 0.45
-
-  # 'cuda:0' for 4070Ti. Override: DEVICE=cpu python launch.py
-  device: "cuda:0"
-
-  # ~2× speedup on 4070Ti. Auto-disabled when device='cpu'.
+  device: cuda:0
   half_precision: true
-
-  # null = all 80 COCO classes.
-  # [0] = person only. [0,2,5,7] = person, car, bus, truck.
   class_filter: null
-
-  # Hard cap per frame.
   max_detections: 100
-
-  # Must be a multiple of 32.
   img_size: 640
-
-
-# -----------------------------------------------------------------------------
-# Tracker (ByteTracker)
-# -----------------------------------------------------------------------------
-#
-# Two-stage association:
-#   Stage 1 — D_high (conf >= high_thresh) vs ALL tracks
-#             updates tracks, creates new ones from unmatched D_high
-#   Stage 2 — D_low (low_thresh <= conf < high_thresh) vs unmatched S1 tracks
-#             rescues partially-occluded tracks, never creates new ones
-#   Discarded — conf < low_thresh
-#
-# Enforced at load: low_thresh < high_thresh
-# -----------------------------------------------------------------------------
 tracker:
-  high_thresh: 0.50
-  low_thresh:  0.10
-  new_track_thresh: 0.50
-  iou_threshold: 0.30
-  max_age: 30   # frames a LOST track survives — 30 @ 30fps = 1 second
-  min_hits: 1   # hits to promote TENTATIVE → CONFIRMED
+  high_thresh: 0.5
+  low_thresh: 0.1
+  new_track_thresh: 0.5
+  iou_threshold: 0.3
+  max_age: 30
+  min_hits: 1
   use_ekf: false
-
-# -----------------------------------------------------------------------------
-# Kalman Filter
-# -----------------------------------------------------------------------------
-#
-# State vector: x = [cx, cy, w, h, vx, vy, vw, vh]
-#
-# NIS consistency check (run after tuning):
-#   Consistent : mean NIS ≈ 4.0  (χ²(4) expected value)
-#   NIS >> 9.49 → overconfident (Q too small / R too large)
-#   NIS << 0.71 → underconfident (Q too large / R too small)
-# -----------------------------------------------------------------------------
 kalman_filter:
-
   initial_covariance:
-    p_position: 10.0    # pixels²    — cx, cy, w, h at track birth
-    p_size:     10.0
-    p_velocity: 100.0   # pixels²/s² — vx, vy, vw, vh (unobserved at birth)
-
+    p_position: 10.0
+    p_size: 10.0
+    p_velocity: 100.0
   process_noise:
-    q_position: 1.0     # pixels²/s
-    q_size:     1.0     # pixels²/s
-    q_velocity: 0.1     # pixels²/s³
-    q_vel_size: 0.02    # pixels²/s³
-
+    q_position: 1.0
+    q_size: 1.0
+    q_velocity: 0.1
+    q_vel_size: 0.02
   measurement_noise:
-    r_center: 1.0       # pixels² — cx, cy
-    r_size:   1.0       # pixels² — w, h
-
-# -----------------------------------------------------------------------------
-# Extended Kalman Filter (Step 10)
-# -----------------------------------------------------------------------------
-#
-# Drop-in replacement for kalman_filter when tracker.use_ekf: true.
-# Adds turn rate ω to state vector: [cx,cy,w,h,vx,vy,vw,vh,ω]
-#
-# Tune q_omega: larger = faster response to turning objects,
-#               noisier trajectory estimates on straight-line motion.
-# -----------------------------------------------------------------------------
+    r_center: 1.0
+    r_size: 1.0
 extended_kalman_filter:
   initial_covariance:
     p_position: 10.0
-    p_size:     10.0
+    p_size: 10.0
     p_velocity: 100.0
-    p_omega:    1.0      # initial turn rate uncertainty (rad²/s²)
-
+    p_omega: 1.0
   process_noise:
     q_position: 1.0
-    q_size:     1.0
+    q_size: 1.0
     q_velocity: 0.1
     q_vel_size: 0.02
-    q_omega:    0.01     # turn rate process noise (rad²/s³)
-
+    q_omega: 0.01
   measurement_noise:
     r_center: 1.0
-    r_size:   1.0
-# -----------------------------------------------------------------------------
-# Visualization
-# -----------------------------------------------------------------------------
+    r_size: 1.0
 visualization:
   rerun_enabled: true
-  rerun_app_id: "robotics_perception_pipeline"
-  rerun_host: "auto"        # "auto" = detect Windows host from /etc/resolv.conf
+  rerun_app_id: robotics_perception_pipeline
+  rerun_host: auto
   rerun_port: 9876
-  rerun_save_path: null     # e.g. "data/recording.rrd" for offline review
+  rerun_save_path: null
   show_bboxes: true
   show_track_ids: true
   show_velocity: true
@@ -189,25 +81,15 @@ visualization:
   show_stats_overlay: true
   bbox_thickness: 2
   velocity_arrow_scale: 0.5
-
-# -----------------------------------------------------------------------------
-# World model / scene graph (Step 11)
-# -----------------------------------------------------------------------------
 world_model:
-  # Maximum KFSnapshot entries per object (trajectory history buffer size).
-  # At 30fps: 30 = 1 second of history.
   max_history: 30
-
-  # Seconds a LOST object remains in the scene graph before pruning.
-  # Should be >= tracker.max_age / fps.
-  # At 30fps, max_age=30 → 1.0s. Set slightly higher to avoid race conditions.
   lost_timeout_s: 1.5
-
-# -----------------------------------------------------------------------------
-# Benchmark (Step 13)
-# -----------------------------------------------------------------------------
 benchmark:
-  dataset_path: "data/MOT17"
-  split:        "train"
-  sequences:    null
-  output_dir:   "data/benchmark_results"
+  dataset_path: data/MOT17
+  split: train
+  sequences: null
+  output_dir: data/benchmark_results
+depth:
+  enabled: false
+  model: depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf
+  device: cuda

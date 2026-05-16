@@ -269,6 +269,14 @@ class BenchmarkConfig:
     def as_dict(self) -> dict:
         return asdict(self)
 
+@dataclass
+class DepthConfig:
+    enabled: bool = False
+    model:   str  = "ZoeD_N"
+    device:  str  = "cuda"
+
+    def as_dict(self) -> dict:
+        return asdict(self)
 
 @dataclass
 class PipelineConfig:
@@ -286,6 +294,7 @@ class PipelineConfig:
     visualization:          VisualizationConfig        = field(default_factory=VisualizationConfig)
     benchmark:              BenchmarkConfig            = field(default_factory=BenchmarkConfig)
     extended_kalman_filter: ExtendedKalmanFilterConfig = field(default_factory=ExtendedKalmanFilterConfig)
+    depth:                  DepthConfig                = field(default_factory=DepthConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -295,16 +304,17 @@ class PipelineConfig:
             SyntheticCamera(cfg.as_dict(), num_frames=90)
         """
         return {
-            "pipeline":         self.pipeline.as_dict(),
-            "camera":           self.camera.as_dict(),
-            "video":            self.video.as_dict(),
-            "synthetic_camera": self.synthetic_camera.as_dict(),
-            "detector":         self.detector.as_dict(),
-            "tracker":          self.tracker.as_dict(),
-            "kalman_filter":    self.kalman_filter.as_dict(),
-            "visualization":    self.visualization.as_dict(),
-            "benchmark":        self.benchmark.as_dict(),
+            "pipeline":               self.pipeline.as_dict(),
+            "camera":                 self.camera.as_dict(),
+            "video":                  self.video.as_dict(),
+            "synthetic_camera":       self.synthetic_camera.as_dict(),
+            "detector":               self.detector.as_dict(),
+            "tracker":                self.tracker.as_dict(),
+            "kalman_filter":          self.kalman_filter.as_dict(),
+            "visualization":          self.visualization.as_dict(),
+            "benchmark":              self.benchmark.as_dict(),
             "extended_kalman_filter": self.extended_kalman_filter.as_dict(),
+            "depth":                  self.depth.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -563,6 +573,8 @@ def _build(raw: dict) -> PipelineConfig:
     ekf_ic = ekf.get("initial_covariance", {})
     ekf_pn = ekf.get("process_noise", {})
     ekf_mn = ekf.get("measurement_noise", {})
+    de = raw.get("depth", {})
+
 
     return PipelineConfig(
         pipeline=PipelineSettings(
@@ -648,6 +660,11 @@ def _build(raw: dict) -> PipelineConfig:
                 r_center= float(ekf_mn.get("r_center", 1.0)),
                 r_size=   float(ekf_mn.get("r_size",   1.0)),
             ),
+        ),
+        depth=DepthConfig(
+            enabled=bool(de.get("enabled", False)),
+            model=str(de.get("model", "ZoeD_N")),
+            device=str(de.get("device", "cuda")),
         ),
         visualization=VisualizationConfig(
             rerun_enabled=           bool(vis.get("rerun_enabled", True)),

@@ -93,6 +93,7 @@ class SceneGraph:
         confirmed_tracks: List[Track],
         lost_tracks:      List[Track],
         timestamp:        float,
+        depth_estimates:  Optional[dict] = None,
     ) -> None:
         """
         Synchronise the scene graph with the current tracker state.
@@ -114,7 +115,8 @@ class SceneGraph:
         # Step 1: update confirmed tracks
         confirmed_ids = set()
         for track in confirmed_tracks:
-            self._upsert(track, timestamp, is_lost=False)
+            est = depth_estimates.get(track.track_id) if depth_estimates else None
+            self._upsert(track, timestamp, is_lost=False, depth_estimate=est)
             confirmed_ids.add(track.track_id)
 
         # Step 2: mark lost tracks
@@ -134,6 +136,7 @@ class SceneGraph:
         track:     Track,
         timestamp: float,
         is_lost:   bool,
+        depth_estimate: Optional["DepthEstimate"] = None,
     ) -> None:
         """Create or update the ObjectState for a track."""
         snap = track.kf.snapshot(timestamp=timestamp, frame_idx=self._frame_count)
@@ -164,6 +167,9 @@ class SceneGraph:
                 is_lost    = is_lost,
                 max_history= self._max_history,
             )
+#       Update metric 3D position if available
+        if depth_estimate is not None and depth_estimate.position_3d is not None:
+            obj.position_3d = depth_estimate.position_3d.copy()
             obj.add_snapshot(snap)
             self._objects[track.track_id] = obj
             log.debug(

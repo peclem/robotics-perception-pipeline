@@ -34,7 +34,7 @@ from perception.detector import YOLOv8Detector
 from tracking.tracker import ByteTracker
 from visualization.debug_vis import DebugVisualizer
 from world_model.scene_graph import SceneGraph
-
+from perception.depth_estimator import ZoeDepthEstimator, NullDepthEstimator
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -77,6 +77,7 @@ class Pipeline:
         self._visualizer = None
         self._writer     = None
         self._scene_graph: Optional[SceneGraph] = None
+        self._depth_estimator = None
 
     # ------------------------------------------------------------------
     # Public
@@ -123,6 +124,16 @@ class Pipeline:
             "Detector ready. Mean warmup latency: %.1f ms",
             self._detector.mean_inference_ms,
         )
+        if cfg.depth.enabled:
+            log.info("Loading ZoeDepth model: %s ...", cfg.depth.model)
+            self._depth_estimator = ZoeDepthEstimator(
+                device=cfg.depth.device,
+                model_name=cfg.depth.model,
+            )
+            self._depth_estimator.warmup()
+            log.info("ZoeDepth ready. Latency: %.1f ms", self._depth_estimator.mean_inference_ms)
+        else:
+            self._depth_estimator = NullDepthEstimator()
 
         self._tracker    = ByteTracker(raw)
         self._scene_graph = SceneGraph(raw)
@@ -207,15 +218,38 @@ class Pipeline:
             t0          = time.monotonic()
             detections  = self._detector.detect(frame)
             t_detect    = time.monotonic() - t0
+            # Depth estimation
+            depth_estimates_list = self._depth_estimator.estimate(frame, detections)
 
+            # Build track_id → depth estimate mapping after tracker update
+            # (tracker assigns IDs, then we match detections to tracks by position)
             t0               = time.monotonic()
             confirmed_tracks = self._tracker.update(detections, frame)
             t_track          = time.monotonic() - t0
+
+            depth_map = {}
+            for track in confirmed_tracks:
+                # Match track to detection by closest centroid
+                if detections and depth_estimates_list:
+                    track_cx, track_cy = track.position
+                    best_idx = None
+                    best_dist = float("inf")
+                    for det_idx, det in enumerate(detections):
+                        x1, y1, x2, y2 = det.bbox_xyxy
+                        det_cx = (x1 + x2) / 2.0
+                        det_cy = (y1 + y2) / 2.0
+                        dist = ((track_cx - det_cx)**2 + (track_cy - det_cy)**2)**0.5
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_idx = det_idx
+                    if best_idx is not None and best_dist < 50:
+                        depth_map[track.track_id] = depth_estimates_list[best_idx]
 
             self._scene_graph.update(
                 confirmed_tracks=confirmed_tracks,
                 lost_tracks=self._tracker.lost_tracks,
                 timestamp=frame.timestamp,
+                depth_estimates=depth_map,
             )
 
             annotated = self._visualizer.draw(
@@ -251,18 +285,33 @@ class Pipeline:
                     1.0 / np.mean(self._frame_times[-30:])
                     if self._frame_times else 0.0
                 )
-                log.info(
-                    "Frame %4d | dets=%2d | tracks=%2d | lost=%2d | sg=%2d | "
-                    "det=%.1fms | trk=%.1fms | %.1f FPS",
-                    frame_idx,
-                    len(detections),
-                    self._scene_graph.n_objects,
-                    len(confirmed_tracks),
-                    len(self._tracker.lost_tracks),
-                    t_detect * 1000,
-                    t_track * 1000,
-                    fps_log,
-                )
+                if self._cfg.depth.enabled:
+                    log.info(
+                        "Frame %4d | dets=%2d | tracks=%2d | lost=%2d | sg=%2d | "
+                        "det=%.1fms | trk=%.1fms | depth=%.1fms | %.1f FPS",
+                        frame_idx,
+                        len(detections),
+                        len(confirmed_tracks),
+                        len(self._tracker.lost_tracks),
+                        self._scene_graph.n_objects,
+                        t_detect * 1000,
+                        t_track * 1000,
+                        self._depth_estimator.mean_inference_ms,
+                        fps_log,
+                    )
+                else:
+                    log.info(
+                        "Frame %4d | dets=%2d | tracks=%2d | lost=%2d | sg=%2d | "
+                        "det=%.1fms | trk=%.1fms | %.1f FPS",
+                        frame_idx,
+                        len(detections),
+                        len(confirmed_tracks),
+                        len(self._tracker.lost_tracks),
+                        self._scene_graph.n_objects,
+                        t_detect * 1000,
+                        t_track * 1000,
+                        fps_log,
+                    )
 
             frame_idx += 1
 

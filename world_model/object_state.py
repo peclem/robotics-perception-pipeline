@@ -60,6 +60,7 @@ class ObjectState:
     last_seen:  float               # time.monotonic()
     n_updates:  int
     is_lost:    bool                = False
+    position_3d: Optional[np.ndarray] = None   # (3,) [X, Y, Z] in metres, None if unavailable
     max_history: int                = 30
     history:    Deque[KFSnapshot]   = field(
         default_factory=lambda: deque(maxlen=30)
@@ -74,7 +75,8 @@ class ObjectState:
                 self.history.maxlen != self.max_history:
             existing = list(self.history)
             self.history = deque(existing, maxlen=self.max_history)
-
+        if self.position_3d is not None:
+            self.position_3d = np.asarray(self.position_3d, dtype=np.float64)
     # ------------------------------------------------------------------
     # Derived properties
     # ------------------------------------------------------------------
@@ -116,6 +118,18 @@ class ObjectState:
             [snap.state[:2] for snap in self.history],
             dtype=np.float64,
         )
+
+        @property
+        def has_metric_depth(self) -> bool:
+            """True if metric 3D position is available (camera calibrated + depth estimated)."""
+            return self.position_3d is not None
+
+        @property
+        def depth_m(self) -> float:
+            """Metric depth in metres. 0.0 if unavailable."""
+            if self.position_3d is None:
+                return 0.0
+            return float(self.position_3d[2])
 
     def add_snapshot(self, snap: KFSnapshot) -> None:
         """Append a KFSnapshot to the bounded history buffer."""
