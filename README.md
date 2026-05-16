@@ -2,6 +2,8 @@
 
 ![CI](https://github.com/peclem/robotics-perception-pipeline/actions/workflows/ci.yml/badge.svg)
 
+![Demo](docs/demo.gif)
+
 A modular, robotics-grade multi-object tracking system built on a standard camera,
 designed for integration into real robotics hardware.
 
