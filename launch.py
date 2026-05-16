@@ -34,7 +34,7 @@ from perception.detector import YOLOv8Detector
 from tracking.tracker import ByteTracker
 from visualization.debug_vis import DebugVisualizer
 from world_model.scene_graph import SceneGraph
-from perception.depth_estimator import ZoeDepthEstimator, NullDepthEstimator
+from perception.depth_estimator import DepthAnythingEstimator, NullDepthEstimator
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -126,7 +126,7 @@ class Pipeline:
         )
         if cfg.depth.enabled:
             log.info("Loading ZoeDepth model: %s ...", cfg.depth.model)
-            self._depth_estimator = ZoeDepthEstimator(
+            self._depth_estimator = DepthAnythingEstimator(
                 device=cfg.depth.device,
                 model_name=cfg.depth.model,
             )

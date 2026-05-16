@@ -39,6 +39,7 @@ tracker:
   max_age: 30
   min_hits: 1
   use_ekf: false
+  use_cmc: false
 kalman_filter:
   initial_covariance:
     p_position: 10.0

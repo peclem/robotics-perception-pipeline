@@ -67,6 +67,7 @@ from tracking.association import (
     linear_assignment,
 )
 from tracking.track import Track, TrackState
+from tracking.motion_compensation import CameraMotionCompensator
 
 
 class ByteTracker:
@@ -112,6 +113,9 @@ class ByteTracker:
 
         self._tracks: List[Track] = []
         self._last_timestamp: Optional[float] = None
+        self._cmc_enabled = bool(config.get("tracker", {}).get("use_cmc", False))
+        self._cmc = CameraMotionCompensator() if self._cmc_enabled else None
+        self._prev_frame: Optional[np.ndarray] = None
         self._frame_count: int = 0
 
     # ------------------------------------------------------------------
@@ -152,6 +156,11 @@ class ByteTracker:
         active_tracks = [t for t in self._tracks if t.state != TrackState.REMOVED]
         for track in active_tracks:
             track.predict(dt)
+
+        # ---- 2b. Camera motion compensation -------------------------
+        if self._cmc_enabled and self._cmc is not None and self._prev_frame is not None:
+            self._cmc.compensate(self._prev_frame, frame.image, active_tracks)
+        self._prev_frame = frame.image.copy()
 
         # ---- 3. Stage 1: D_high vs ALL tracks ----------------------
         (matched_s1,
