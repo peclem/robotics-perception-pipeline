@@ -35,6 +35,7 @@ from tracking.tracker import ByteTracker
 from visualization.debug_vis import DebugVisualizer
 from world_model.scene_graph import SceneGraph
 from perception.depth_estimator import DepthAnythingEstimator, NullDepthEstimator
+from perception.pose_estimator import NullPoseEstimator, CameraPose
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -78,6 +79,7 @@ class Pipeline:
         self._writer     = None
         self._scene_graph: Optional[SceneGraph] = None
         self._depth_estimator = None
+        self._pose_estimator = None
 
     # ------------------------------------------------------------------
     # Public
@@ -134,6 +136,7 @@ class Pipeline:
             log.info("ZoeDepth ready. Latency: %.1f ms", self._depth_estimator.mean_inference_ms)
         else:
             self._depth_estimator = NullDepthEstimator()
+        self._pose_estimator = NullPoseEstimator()
 
         self._tracker    = ByteTracker(raw)
         self._scene_graph = SceneGraph(raw)
@@ -245,11 +248,13 @@ class Pipeline:
                     if best_idx is not None and best_dist < 50:
                         depth_map[track.track_id] = depth_estimates_list[best_idx]
 
+            camera_pose = self._pose_estimator.estimate(frame)
             self._scene_graph.update(
                 confirmed_tracks=confirmed_tracks,
                 lost_tracks=self._tracker.lost_tracks,
                 timestamp=frame.timestamp,
                 depth_estimates=depth_map,
+                camera_pose=camera_pose,
             )
 
             annotated = self._visualizer.draw(

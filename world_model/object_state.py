@@ -28,6 +28,9 @@ from typing import Deque, List, Optional
 import numpy as np
 
 from state_estimation.kalman_filter import KFSnapshot
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from perception.pose_estimator import CameraPose
 
 
 @dataclass
@@ -77,6 +80,8 @@ class ObjectState:
             self.history = deque(existing, maxlen=self.max_history)
         if self.position_3d is not None:
             self.position_3d = np.asarray(self.position_3d, dtype=np.float64)
+        if self.position_world is not None:
+            self.position_world = np.asarray(self.position_world, dtype=np.float64)
     # ------------------------------------------------------------------
     # Derived properties
     # ------------------------------------------------------------------
@@ -119,17 +124,22 @@ class ObjectState:
             dtype=np.float64,
         )
 
-        @property
-        def has_metric_depth(self) -> bool:
-            """True if metric 3D position is available (camera calibrated + depth estimated)."""
-            return self.position_3d is not None
+    @property
+    def has_world_position(self) -> bool:
+        """True if metric world-frame position is available."""
+        return self.position_world is not None
 
-        @property
-        def depth_m(self) -> float:
-            """Metric depth in metres. 0.0 if unavailable."""
-            if self.position_3d is None:
-                return 0.0
-            return float(self.position_3d[2])
+    @property
+    def has_metric_depth(self) -> bool:
+        """True if metric 3D position is available (camera calibrated + depth estimated)."""
+        return self.position_3d is not None
+
+    @property
+    def depth_m(self) -> float:
+        """Metric depth in metres. 0.0 if unavailable."""
+        if self.position_3d is None:
+            return 0.0
+        return float(self.position_3d[2])
 
     def add_snapshot(self, snap: KFSnapshot) -> None:
         """Append a KFSnapshot to the bounded history buffer."""
