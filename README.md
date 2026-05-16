@@ -2,135 +2,222 @@
 
 ![CI](https://github.com/peclem/robotics-perception-pipeline/actions/workflows/ci.yml/badge.svg)
 
-![Demo](docs/demo.gif)
-
-A modular, robotics-grade multi-object tracking system built on a standard camera,
-designed for integration into real robotics hardware.
-
----
-
-## Problem Statement
-
-How does a robot build a probabilistic model of its dynamic environment from raw sensor data?
-
-This system answers that through a full perception stack:
-raw frames → object detection → multi-object tracking → Kalman-filtered state estimation → probabilistic world model.
-
-Every component is designed with the same constraints as production robotics systems:
-typed interfaces, uncertainty-aware outputs, modular architecture, and quantitative validation.
+A modular perception stack for mobile robotics. Implements camera-based
+multi-object detection, tracking, and state estimation, with a probabilistic
+world model designed as a perception layer for ROS2 navigation systems.
 
 ---
 
-## System Architecture
+## System architecture
 
-    Camera Input
+A complete robotics perception architecture. Implemented components are
+marked. Unimplemented components and their integration points are identified.
+
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  SENSING                                                         ║
+    ║                                                                  ║
+    ║  [✓] Monocular RGB        CameraInterface ABC                    ║
+    ║  [✓] Camera calibration   scripts/calibrate_camera.py           ║
+    ║  [ ] Stereo camera        CameraInterface ABC — drop-in backend  ║
+    ║  [ ] IMU                  error-state EKF input                  ║
+    ║  [ ] LiDAR                point cloud processing                 ║
+    ╚══════════════════════════════════════════════════════════════════╝
+                          │
+                          ▼
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  SENSOR PREPROCESSING                                            ║
+    ║                                                                  ║
+    ║  [✓] Distortion correction    load_intrinsics() + OpenCV        ║
+    ║  [✓] Frame timestamping       time.monotonic(), CameraFrame     ║
+    ║  [ ] Hardware timestamp sync  multi-sensor clock alignment      ║
+    ╚══════════════════════════════════════════════════════════════════╝
+                          │
+                          ▼
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  PERCEPTION                                                      ║
+    ║                                                                  ║
+    ║  [✓] Object detection         YOLOv8n fine-tuned on MOT17       ║
+    ║  [✓] Multi-object tracking    ByteTrack two-stage association    ║
+    ║  [✓] KF state estimation      Joseph form, 8D state, NIS        ║
+    ║  [✓] EKF — constant turn rate 9D state + ω, analytical Jac.    ║
+    ║  [✓] Camera motion comp.      LK optical flow + affine RANSAC   ║
+    ║  [✓] Monocular depth          Depth Anything V2, metric         ║
+    ║  [ ] ReID embeddings          OSNet, IoU + cosine cost          ║
+    ║  [ ] Stereo depth             StereoDepthEstimator ABC          ║
+    ║  [ ] IMU pre-integration      error-state EKF fusion            ║
+    ║  [ ] Semantic segmentation    —                                  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+                          │
+                          ▼
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  COORDINATE FRAMES                                               ║
+    ║                                                                  ║
+    ║  [ ] camera_frame → base_link → odom → map transform tree      ║
+    ║  [ ] Ego-pose estimation      monocular VIO or stereo + IMU    ║
+    ║                                                                  ║
+    ║  Object positions are currently in the camera frame.            ║
+    ║  A planning layer requires positions in a fixed world frame.    ║
+    ║  Integration point: SceneGraph.update() accepts a camera pose   ║
+    ║  parameter; all ObjectState positions are then expressed in     ║
+    ║  the map frame automatically.                                   ║
+    ║                                                                  ║
+    ║  Camera motion compensation (implemented) corrects 2D track     ║
+    ║  states for ego-motion but does not produce a full SE(3) pose.  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+                          │
+                          ▼
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  WORLD MODEL                                                     ║
+    ║                                                                  ║
+    ║  [✓] Dynamic object tracking  SceneGraph, ObjectState           ║
+    ║  [✓] Per-object covariance    full 8x8 / 9x9 matrix            ║
+    ║  [✓] Trajectory history       bounded KFSnapshot deque          ║
+    ║  [✓] Metric 3D positions      position_3d from depth            ║
+    ║  [✓] Spatial queries          query_nearby(pos, radius)         ║
+    ║  [✓] Uncertainty queries      Mahalanobis distance              ║
+    ║  [ ] Static occupancy grid    prerequisite for Nav2 costmap     ║
+    ║  [ ] Persistent map           SLAM integration                  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+                          │
+                          ▼
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  PLANNING INTERFACE                                              ║
+    ║                                                                  ║
+    ║  SceneGraph.query_nearby(robot_position, radius)                 ║
+    ║      → List[(distance, ObjectState)] sorted, with covariance    ║
+    ║      → costmap inflation by 2σ ellipse per object               ║
+    ║      → local planner input (DWA / TEB / MPC)                   ║
+    ║                                                                  ║
+    ║  [ ] Global planner           Nav2 / RRT / A*                   ║
+    ║  [ ] Local planner            DWA / TEB / MPC                   ║
+    ║  [ ] Behaviour tree           BehaviorTree.CPP                  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+                          │
+                          ▼
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  CONTROL                                                         ║
+    ║                                                                  ║
+    ║  [ ] ros2_control             hardware interface layer           ║
+    ║  [ ] PID / LQR / MPC          motor control loops               ║
+    ║  [ ] Safety monitor           watchdog, graceful degradation     ║
+    ╚══════════════════════════════════════════════════════════════════╝
+
+    ROS2 adapter stubs: ros2_nodes/ wraps each implemented module
+    in thin sensor_msgs / geometry_msgs / nav_msgs interfaces.
+
+---
+
+## Data flow
+
+    CameraFrame (image, timestamp, intrinsics)
+        │
+        ├──▶ YOLOv8n ──▶ Detection[] (bbox, confidence, class)
+        │         │
+        │         └──▶ Depth Anything V2 ──▶ depth_m, position_3d
+        │
+        ├──▶ CameraMotionCompensator
+        │         LK optical flow on background keypoints
+        │         Affine RANSAC → homography H
+        │         H⁻¹ applied to track states before association
         │
         ▼
-    Detection (YOLOv8n)
-        │  bbox + confidence
+    ByteTracker
+        Stage 1: D_high ↔ all tracks    (Hungarian, 1-IoU cost)
+        Stage 2: D_low  ↔ lost tracks   (occlusion rescue)
+        Per track:
+            KF.predict(dt)   →  x̂ = F x,  P = F P Fᵀ + Q
+            KF.update(z)     →  x = x̂ + K(z − Hx̂),  Joseph form
+            NIS = yᵀ S⁻¹ y  ~  χ²(4),  bounds [0.711, 9.488]
+        │
         ▼
-    ByteTrack Two-Stage Association
-        │  track ID + detection
-        ▼
-    Kalman Filter / EKF State Estimation
-        │  [cx, cy, w, h, vx, vy, vw, vh] + covariance
-        ▼
-    World Model / Scene Graph
-        │  ObjectState: position, covariance, velocity, trajectory
-        ▼
-    Visualization (Rerun.io + OpenCV)
+    SceneGraph
+        ObjectState per confirmed track:
+            position    (cx, cy)  pixels — camera frame
+            position_3d (X, Y, Z) metres — camera frame [¹]
+            covariance  8×8 full matrix
+            velocity    (vx, vy, vw, vh) pixels/s
+            trajectory  bounded KFSnapshot history
+        │
+        └──▶ query_nearby(position, radius) → planner interface
 
-Each module exposes a clean Python ABC. Swapping any component — detector model,
-filter type, camera backend — requires changing one class with zero cascading changes.
-
----
-
-## Key Features
-
-**Uncertainty-aware state estimation** — every track output includes a full covariance
-matrix. The 2-sigma position ellipse shrinks as the filter converges and grows during
-occlusion. Visually demonstrable in Rerun.io.
-
-**Two-stage ByteTrack association** — high-confidence detections for primary assignment,
-low-confidence detections for occlusion rescue. Tracks survive partial occlusion without
-ID switches.
-
-**Extended Kalman Filter with constant turn rate model** — nonlinear CTR motion model
-with analytical Jacobians validated against numerical finite differences.
-NEES diagnostic available for simulation consistency testing.
-
-**NIS filter consistency validation** — Normalised Innovation Squared logged per track.
-A consistent filter produces NIS ~ chi-squared(4) with mean 4.0.
-Standard aerospace/robotics filter validation diagnostic.
-
-**Probabilistic world model** — scene graph with per-object trajectory history,
-query_nearby(position, radius) spatial interface, and Mahalanobis-distance queries.
-Designed as the interface a path planner or costmap generator would call.
-
-**Modular, interface-driven architecture** — all modules depend on ABCs.
-ROS2 node wrappers are thin adapters over the core logic.
-
-**Configuration-driven** — all parameters live in config/default.yaml.
-Environment variable overrides for CI and deployment. No magic numbers in source.
+    [¹] Camera-frame metric positions. World-frame positions require
+        ego-pose estimation and a coordinate frame transform tree.
 
 ---
 
-## Technical Stack
+## Benchmark results
 
-| Component        | Library                | Robotics Rationale                                      |
-|------------------|------------------------|---------------------------------------------------------|
-| Detection        | YOLOv8n (Ultralytics)  | ONNX/TensorRT exportable for embedded deployment        |
-| Tracking         | ByteTrack              | Two-stage occlusion recovery, production-grade          |
-| State estimation | NumPy KF/EKF (scratch) | Full transparency — every matrix multiply explainable   |
-| Config           | PyYAML + dataclasses   | Mirrors ROS2 parameter server pattern                   |
-| Visualization    | Rerun.io + OpenCV      | Robotics-native: 3D, time-series, transforms            |
-| Testing          | pytest + filterpy      | Deterministic, hardware-free, CI-ready                  |
+Evaluated on MOT17 train split (21 sequences) on RTX 4070Ti.
+Public detection track — zero-shot and domain-fine-tuned variants.
 
----
+    Detector                  MOTA    MOTP    FP      FN       IDSW   Hz
+    ──────────────────────────────────────────────────────────────────────
+    YOLOv8n  zero-shot        23.6%   75.9%   45228   211167   2463   132
+    YOLOv8n  fine-tuned †     44.7%   76.5%   23160   142461   3651   110
 
-## Robotics Relevance
+    † Fine-tuned: 50 epochs, imgsz=1280, trained on 5 MOT17 sequences.
+      Validation sequences (MOT17-09, MOT17-11, unseen during training):
+      MOTA 51.6%  MOTP 77.7%  Hz 118
 
-| This project                      | Real robotics system                              |
-|-----------------------------------|---------------------------------------------------|
-| KalmanFilter / ExtendedKF         | EKF in autonomous vehicle localisation            |
-| ByteTracker Hungarian assignment  | Multi-object SLAM data association                |
-| SceneGraph.query_nearby()         | Dynamic obstacle query for motion planner         |
-| CameraFrame typed DTO             | sensor_msgs/Image + sensor_msgs/CameraInfo        |
-| config/default.yaml               | ROS2 parameter server                             |
-| ros2_nodes/ stubs                 | Production ROS2 deployment adapters               |
-| NIS diagnostic                    | Standard aerospace filter consistency test        |
-| NEES diagnostic                   | Simulation-based filter validation                |
-| Covariance ellipse                | Uncertainty propagation in probabilistic roadmaps |
-| Track history buffer              | Trajectory prediction input for planners          |
+The gap to the published ByteTrack result (MOTA 80.3%) is explained by
+detector scale and training data. The published result uses YOLOX-X
+(94M parameters, private detections fine-tuned on MOT17 test sequences).
+This implementation uses YOLOv8n (3.2M parameters, public detections).
+The tracker association and Kalman filter are architecturally equivalent.
 
-The KF covariance output is a first-class deliverable — not an internal variable.
-Every confirmed track exposes its full 8x8 (or 9x9 EKF) covariance matrix.
-A planner consuming this system receives a probability distribution over object states.
+FP dropped 49% and FN dropped 33% with fine-tuning, confirming that the
+tracker association is not the performance bottleneck.
 
 ---
 
-## Benchmark Results
+## Engineering notes
 
-### MOT17 — train split (21 sequences, YOLOv8n fp16, RTX 4070Ti)
+**Filter consistency.** The Kalman filter is validated beyond prediction
+accuracy. NIS (Normalised Innovation Squared) is computed per track and
+per frame. A consistent filter produces NIS ~ χ²(4) with mean ≈ 4.0 —
+the standard aerospace and robotics filter validation diagnostic from
+Bar-Shalom et al. (2001). The NEES diagnostic is also implemented for
+simulation-based validation when ground truth is available.
 
-| Metric | Value  |
-|--------|--------|
-| MOTA   | 23.6%  |
-| MOTP   | 75.9%  |
-| FP     | 45228  |
-| FN     | 211167 |
-| IDSW   | 2463   |
-| Hz     | 132.4  |
+**Uncertainty as a first-class output.** Every confirmed track exposes
+its full 8×8 (or 9×9 EKF) covariance matrix. The 2σ position ellipse
+is rendered in Rerun.io, shrinking as the filter converges and growing
+during predict-only periods (occlusion). A downstream planner can use
+the covariance to inflate a costmap proportionally to position uncertainty
+rather than using a fixed inflation radius.
 
-MOTP 75.9% confirms that when objects are detected, localisation and association
-quality are consistent across all 21 sequences. The primary bottleneck is detector
-recall — YOLOv8n is a 6MB model trained on COCO without domain fine-tuning.
-IDSW/frame = 0.53 demonstrates stable track identity under the two-stage
-ByteTrack association. Throughput of 132.4 Hz provides 4x real-time headroom at 30fps.
+**Camera motion compensation.** The LK optical flow + affine RANSAC
+approach follows BoT-SORT section 3.2. Background keypoints are detected
+and explicitly masked inside object bounding boxes — a moving object
+would otherwise corrupt the homography estimate. The inverse homography
+is applied to track states before association, removing apparent motion
+caused by camera ego-motion.
+
+**Modular architecture.** Every component implements a Python ABC.
+Swapping any module — detector checkpoint, filter variant, camera
+backend, depth estimator — requires changing one class with zero
+cascading changes downstream. The fine-tuning experiment demonstrates
+this: the only change between zero-shot and fine-tuned evaluations is
+the model path in config/default.yaml.
 
 ---
 
-## Quick Start
+## Technical stack
+
+    Component                Library / method           Latency (4070Ti)
+    ───────────────────────────────────────────────────────────────────
+    Object detection         YOLOv8n (Ultralytics)      ~5 ms
+    Multi-object tracking    ByteTrack                  ~0.5 ms
+    State estimation         KF / EKF (NumPy)           ~0.1 ms
+    Depth estimation         Depth Anything V2           ~10 ms
+    Camera motion comp.      OpenCV LK + RANSAC         ~1 ms
+    World model              Custom scene graph          ~0.2 ms
+    Total (depth disabled)                              ~7 ms  (143 Hz)
+    Total (depth enabled)                               ~17 ms  (58 Hz)
+
+---
+
+## Quick start
 
     git clone https://github.com/peclem/robotics-perception-pipeline
     cd robotics-perception-pipeline
@@ -138,142 +225,118 @@ ByteTrack association. Throughput of 132.4 Hz provides 4x real-time headroom at 
     python3.10 -m venv .venv && source .venv/bin/activate
 
     pip install torch torchvision torchaudio \
-      --index-url https://download.pytorch.org/whl/cu121
+        --index-url https://download.pytorch.org/whl/cu121
     pip install ultralytics opencv-python-headless filterpy \
-      scipy numpy pyyaml pytest rerun-sdk
+        scipy numpy pyyaml pytest rerun-sdk transformers accelerate
     pip install -e .
 
-    # Run on synthetic camera (no hardware needed)
     RERUN_ENABLED=false python3 launch.py --source synthetic
-
-    # Run on a video file
-    RERUN_ENABLED=false python3 launch.py --source video --input data/your_video.mp4
+    RERUN_ENABLED=false python3 launch.py --source video --input data/clip.mp4
 
 ---
 
-## Run Tests
+## Tests
 
-    # All unit tests (no GPU, no hardware required)
     python3 -m pytest tests/ -m "not integration" -v
 
-    # Integration tests (requires CUDA GPU)
-    python3 -m pytest tests/ -m integration -v
-
-248 unit tests across 6 modules. All tests use SyntheticCamera or synthetic data.
-No hardware required for CI.
-
----
-
-## Rerun.io Visualization
-
-    # 1. Download Rerun viewer:
-    #    https://rerun.io/docs/getting-started/installing-viewer
-
-    # 2. Open the viewer (it waits for connections)
-
-    # 3. Run the pipeline — it auto-connects via TCP
-    python3 launch.py --source video --input data/your_video.mp4
-
-    # Or save a recording for offline review
-    python3 launch.py --source synthetic --rerun-save data/recording.rrd
-
-The viewer shows camera image, detection boxes, track boxes colour-coded by ID,
-2-sigma covariance ellipses, velocity arrows, and FPS/latency time-series plots.
+248 unit tests across detection, tracking, state estimation, world model,
+and visualisation. All tests use SyntheticCamera or synthetic data —
+no hardware required. Integration tests (GPU, real model) are marked
+and excluded from CI.
 
 ---
 
-## Camera Calibration
+## Configuration
 
-    # Live webcam calibration (requires 9x6 checkerboard)
-    python3 scripts/calibrate_camera.py \
-      --device 0 --rows 9 --cols 6 \
-      --out config/camera_intrinsics.yaml
+All parameters are externalised in config/default.yaml.
 
-    # From a video of a checkerboard
-    python3 scripts/calibrate_camera.py \
-      --input data/calib.mp4 \
-      --out config/camera_intrinsics.yaml
+    detector:
+        model: "runs/detect/mot17_finetune/weights/best.pt"
+        confidence_threshold: 0.25
 
-Calibration enables metric-space position estimates from the Kalman filter.
+    tracker:
+        use_ekf: false      # true = ExtendedKalmanFilter (CTR model)
+        use_cmc: false      # true = camera motion compensation
+
+    depth:
+        enabled: false      # true = Depth Anything V2 metric depth
+        model: "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+
+Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
 ---
 
-## Benchmark
+## Benchmark scripts
 
-    # Single sequence
+    python3 scripts/mot17_to_yolo.py --mot17 data/MOT17 --out data/mot17_yolo
+    python3 scripts/train_detector.py --data data/mot17_yolo/mot17.yaml
     python3 scripts/benchmark.py \
-      --dataset data/MOT17 --split train \
-      --sequences MOT17-04-FRCNN --out data/mot17_results
+        --dataset data/MOT17 --split train --out data/mot17_results
 
-    # Full train split
-    python3 scripts/benchmark.py \
-      --dataset data/MOT17 --split train --out data/mot17_results
+    python3 scripts/calibrate_camera.py \
+        --device 0 --rows 9 --cols 6 \
+        --out config/camera_intrinsics.yaml
 
 ---
 
-## Project Structure
+## Project structure
 
-    perception/          Camera interface, YOLOv8 detector, config loader
-    tracking/            ByteTrack, Hungarian assignment, Track dataclass
-    state_estimation/    Kalman Filter, Extended KF (CTR), NIS/NEES diagnostics
-    world_model/         Scene graph, ObjectState, spatial queries
+    perception/          Camera interface, detector, depth estimator, config
+    tracking/            ByteTrack, association, motion compensation, Track
+    state_estimation/    Kalman Filter, Extended KF, NIS/NEES diagnostics
+    world_model/         SceneGraph, ObjectState, spatial queries
     visualization/       Rerun.io logger, OpenCV annotator
-    ros2_nodes/          ROS2 adapter stubs (Phase 3)
-    scripts/             Calibration, benchmark
-    tests/               248 unit tests, all hardware-free
-    config/              YAML configuration — all parameters externalised
-    docs/                Benchmark results
+    ros2_nodes/          ROS2 adapter stubs
+    scripts/             Calibration, benchmark, detector training
+    tests/               248 unit tests — all hardware-free
+    config/              YAML configuration
 
 ---
 
-## Future Improvements
+## Extensions
 
-### Robot Integration (Phase 3)
+**Coordinate frame management.** Object positions are currently expressed
+in the camera frame. Expressing them in a fixed world frame requires
+ego-pose estimation (monocular VIO, or stereo + IMU) and a tf2-style
+transform tree. The integration point is SceneGraph.update(), which
+accepts an optional camera pose parameter.
 
-ROS2 Humble node wrappers for each module are stubbed in ros2_nodes/.
-Each adapter is approximately 50 lines — the core module logic is framework-agnostic.
-Upgrade path: WebcamCamera becomes a ROS2ImageSubscriber with the same CameraFrame output.
+**ReID appearance features.** The association cost matrix in
+tracking/association.py accepts an additional cosine distance term.
+Adding an OSNet or FastReID backbone as an AppearanceExtractor module
+enables track re-identification after long occlusion without changes
+to the tracker or world model.
 
-### SLAM Extension
+**IMU fusion.** The ExtendedKalmanFilter CTR model includes a turn rate
+state ω that is directly observable from a gyroscope. Adding an IMU
+measurement function closes the loop between the motion model and
+physical sensor data, improving velocity estimates under camera motion.
 
-SceneGraph coordinate frame is designed to accept ORB-SLAM3 map output.
-Replace pixel coordinates with metric 3D positions from the SLAM map frame.
-
-### Planning / Control Interface
-
-SceneGraph.query_nearby(robot_position, radius) is the planner interface.
-Connect to Nav2 costmap or a custom potential field planner:
-dynamic obstacles → inflated costmap → path replanning.
-
-### Multi-Sensor Fusion
-
-ExtendedKalmanFilter is ready for IMU fusion via error-state EKF.
-Fuse angular velocity into the turn rate state omega in the CTR motion model.
-
-### Detector Fine-tuning
-
-The Detector ABC means swapping yolov8n.pt for a domain-specific checkpoint
-is a one-class change with zero other modifications required.
+**Stereo depth.** The DepthEstimator ABC accepts a StereoDepthEstimator
+as a drop-in replacement for DepthAnythingEstimator. Stereo triangulation
+produces metric depth without the scale ambiguity inherent to monocular
+estimation, with no additional inference cost at runtime.
 
 ---
 
-## Research Foundation
+## References
 
-| Paper                                        | Used in                                      |
-|----------------------------------------------|----------------------------------------------|
-| Kalman (1960) — optimal linear filter        | state_estimation/kalman_filter.py            |
-| Welch and Bishop — KF tutorial               | state_estimation/kalman_filter.py            |
-| Bewley et al. SORT (2016)                    | tracking/tracker.py, tracking/association.py |
-| Zhang et al. ByteTrack (2022)                | tracking/tracker.py                          |
-| Wan and van der Merwe — UKF (2000)           | EKF upgrade path                             |
-| Thrun, Burgard, Fox — Probabilistic Robotics | state_estimation/, world_model/              |
-| Campos et al. ORB-SLAM3 (2021)               | Phase 3 integration target                   |
+    Kalman, R.E. (1960)              Optimal linear filter
+    Welch & Bishop (2006)            Kalman filter tutorial
+    Bar-Shalom et al. (2001)         Estimation with applications to
+                                     tracking and navigation
+    Bewley et al. (2016)             SORT — tracking-by-detection
+    Zhang et al. (2022)              ByteTrack — arXiv:2110.06864
+    Aharon et al. (2022)             BoT-SORT — arXiv:2206.14651
+    Thrun, Burgard & Fox (2005)      Probabilistic Robotics
+    Yang et al. (2024)               Depth Anything V2 — arXiv:2406.09414
+    Campos et al. (2021)             ORB-SLAM3 — arXiv:2007.11898
 
 ---
 
 ## Hardware
 
-- CPU: AMD Ryzen 7 7700
-- GPU: NVIDIA RTX 4070 Ti
-- OS: Ubuntu 22.04 (WSL2)
-- Python: 3.10
+    CPU    AMD Ryzen 7 7700
+    GPU    NVIDIA RTX 4070 Ti  (12 GB VRAM)
+    OS     Ubuntu 22.04 (WSL2)
+    Python 3.10
