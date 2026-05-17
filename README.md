@@ -102,8 +102,11 @@ marked. Unimplemented components and their integration points are identified.
     ║  [ ] Safety monitor           watchdog, graceful degradation     ║
     ╚══════════════════════════════════════════════════════════════════╝
 
-    ROS2 adapter stubs: ros2_nodes/ wraps each implemented module
-    in thin sensor_msgs / geometry_msgs / nav_msgs interfaces.
+    ROS2 adapter nodes: ros2_ws/src/robotics_perception_ros2/
+    wraps each implemented module in thin sensor_msgs / vision_msgs /
+    nav_msgs interfaces. Launch with
+        ros2 launch robotics_perception_ros2 perception_pipeline.launch.py
+    See "ROS2 integration" section below for topic graph + setup.
 
 ---
 
@@ -235,6 +238,88 @@ the model path in config/default.yaml.
 
 ---
 
+## ROS2 integration
+
+Standalone Python pipeline AND a parallel ROS2 graph. Same modules
+behind both — the ROS2 layer is an adapter, not a port.
+
+### Topic graph
+
+    camera_publisher_node ──┬──▶ /perception/image_raw    (sensor_msgs/Image)
+                            ├──▶ /perception/camera_info  (sensor_msgs/CameraInfo)
+
+    /perception/image_raw  ──▶ detection_node  ──▶ /perception/detections
+                                                   (vision_msgs/Detection2DArray)
+
+    /perception/detections + image ──▶ tracking_node  ──▶ /perception/tracks
+                                                          (vision_msgs/Detection2DArray
+                                                           with track IDs)
+
+    /perception/image_raw  ──▶ pose_node  ──┬──▶ /perception/odom (nav_msgs/Odometry)
+                                            └──▶ /tf  (map → camera_frame)
+
+    /perception/tracks + /perception/odom ──▶ scene_graph_node ──▶ /perception/scene
+                                                                   (vision_msgs/Detection3DArray
+                                                                    with covariance)
+
+### Setup
+
+    # 1. Install ROS2 Humble (see https://docs.ros.org/en/humble/Installation.html)
+    # 2. Source ROS2 + project venv together (ORDER MATTERS — venv first):
+    source .venv/bin/activate
+    source /opt/ros/humble/setup.bash
+
+    # 3. Build the workspace
+    cd ros2_ws
+    colcon build --packages-select robotics_perception_ros2
+
+    # 4. Source the install overlay
+    source install/setup.bash
+
+### Launch
+
+    ros2 launch robotics_perception_ros2 perception_pipeline.launch.py \
+        source:=video \
+        video_path:=/abs/path/to/clip.mp4 \
+        config_path:=/abs/path/to/config/default.yaml
+
+    # Verify in another shell:
+    ros2 topic list                            # 7 /perception/* topics
+    ros2 topic hz /perception/scene            # ~6 Hz on this hardware
+    ros2 topic echo /perception/scene --once   # single Detection3DArray
+
+### Honest performance notes
+
+The standalone Python pipeline runs end-to-end at ~30 Hz. The ROS2
+graph runs at ~6 Hz at 1280×720 due to:
+
+- DDS serialisation of 1280×720 BGR images (~2.7 MB / msg / topic)
+- Per-process CUDA context overhead (detection + pose both load torch)
+- Synchronous callback chains across 5 processes
+
+The graph is a faithful adapter, not a tuned production deployment.
+Knock-on optimisations (image_transport compression, intra-process
+composition via component containers, shared CUDA context) are
+deferred to Phase 4 production robustness work.
+
+### Lossiness across the ROS boundary
+
+`scene_graph_node` reconstructs minimal Track state from
+`Detection2DArray` because ROS standard messages don't carry the full
+8×8 KF covariance. Position covariance survives via
+`Detection3D.results[0].pose.covariance` (a 6×6 block). Velocity
+covariance is approximated. For a production deployment, define a
+custom message carrying the full filter state.
+
+### Backend selection
+
+Both the standalone and ROS2 paths read the same `config/default.yaml`.
+`pose_estimator.type: dpvo` switches the pose source from
+`NullPoseEstimator` to the real `DPVOPoseEstimator`. Build the DPVO
+extension first (see `third_party/DPVO/`).
+
+---
+
 ## Tests
 
     python3 -m pytest tests/ -m "not integration" -v
@@ -286,7 +371,13 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
     state_estimation/    Kalman Filter, Extended KF, NIS/NEES diagnostics
     world_model/         SceneGraph, ObjectState, spatial queries
     visualization/       Rerun.io logger, OpenCV annotator
-    ros2_nodes/          ROS2 adapter stubs
+    ros2_ws/             ROS2 colcon workspace
+                          src/robotics_perception_ros2/
+                            camera_publisher_node    Image + CameraInfo
+                            detection_node           Detection2DArray
+                            tracking_node            tracked Detection2DArray
+                            pose_node                Odometry + tf broadcast
+                            scene_graph_node         Detection3DArray
     scripts/             Calibration, benchmark, detector training
     tests/               248 unit tests — all hardware-free
     config/              YAML configuration
