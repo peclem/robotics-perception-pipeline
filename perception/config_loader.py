@@ -278,6 +278,90 @@ class DepthConfig:
     def as_dict(self) -> dict:
         return asdict(self)
 
+
+@dataclass
+class WorldModelConfig:
+    max_history:   int   = 30
+    lost_timeout_s: float = 1.0
+    # Name of the frame in which depth_estimate.position_3d is expressed.
+    # Must match coordinate_frames.camera_frame for tree lookups to resolve.
+    camera_frame:  str   = "camera_frame"
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class StaticExtrinsicConfig:
+    """
+    Static SE(3) transform between two frames.
+
+    R is a 3×3 rotation as a row-major list of 9 floats.
+    t is a 3-vector translation in metres.
+    """
+    parent: str           = "base_link"
+    child:  str           = "camera_frame"
+    R:      List[float]   = field(default_factory=lambda: [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+    ])
+    t:      List[float]   = field(default_factory=lambda: [0.0, 0.0, 0.0])
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class CoordinateFramesConfig:
+    """
+    TransformTree topology and static extrinsics.
+
+    The pipeline builds a TransformTree(root_frame) at startup and
+    registers each entry in `static_extrinsics` as a static edge.
+    Dynamic edges (ego-motion) are pushed each frame by the pose
+    estimator into camera_frame's parent edge.
+    """
+    enabled:           bool                          = False
+    root_frame:        str                           = "map"
+    camera_frame:      str                           = "camera_frame"
+    static_extrinsics: List[StaticExtrinsicConfig]   = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "enabled":           self.enabled,
+            "root_frame":        self.root_frame,
+            "camera_frame":      self.camera_frame,
+            "static_extrinsics": [e.as_dict() for e in self.static_extrinsics],
+        }
+
+
+@dataclass
+class PoseEstimatorConfig:
+    """
+    Selects which PoseEstimator backend to instantiate.
+
+    type
+        'null'    — NullPoseEstimator (default; camera-frame-only mode)
+        'orbslam' — ORB-SLAM3 (planned)
+        'dpvo'    — Deep Patch Visual Odometry (implemented)
+
+    DPVO-specific
+    -------------
+    checkpoint        : path to dpvo.pth weights
+    stride            : run DPVO every Nth frame (1 = every frame).
+                        stride=2 → pose at 15 Hz, leaves comfortable
+                        budget on this hardware (see benchmark).
+    patches_per_frame : DPVO's accuracy/speed knob (default 96)
+    """
+    type:              str           = "null"
+    checkpoint:        Optional[str] = None
+    stride:            int           = 2
+    patches_per_frame: int           = 96
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
 @dataclass
 class PipelineConfig:
     """
@@ -295,6 +379,9 @@ class PipelineConfig:
     benchmark:              BenchmarkConfig            = field(default_factory=BenchmarkConfig)
     extended_kalman_filter: ExtendedKalmanFilterConfig = field(default_factory=ExtendedKalmanFilterConfig)
     depth:                  DepthConfig                = field(default_factory=DepthConfig)
+    world_model:            WorldModelConfig           = field(default_factory=WorldModelConfig)
+    coordinate_frames:      CoordinateFramesConfig     = field(default_factory=CoordinateFramesConfig)
+    pose_estimator:         PoseEstimatorConfig        = field(default_factory=PoseEstimatorConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -315,6 +402,9 @@ class PipelineConfig:
             "benchmark":              self.benchmark.as_dict(),
             "extended_kalman_filter": self.extended_kalman_filter.as_dict(),
             "depth":                  self.depth.as_dict(),
+            "world_model":            self.world_model.as_dict(),
+            "coordinate_frames":      self.coordinate_frames.as_dict(),
+            "pose_estimator":         self.pose_estimator.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -539,6 +629,44 @@ def _validate(raw: dict) -> None:
     for key in ("r_center", "r_size"):
         _require_positive_float(errors, mn, f"kalman_filter.measurement_noise.{key}")
 
+    # Coordinate frames
+    cf_raw = raw.get("coordinate_frames", {})
+    for i, ext in enumerate(cf_raw.get("static_extrinsics", []) or []):
+        prefix = f"coordinate_frames.static_extrinsics[{i}]"
+        if "parent" not in ext or "child" not in ext:
+            errors.append(f"{prefix}: 'parent' and 'child' are required.")
+        R = ext.get("R")
+        if R is not None:
+            if not isinstance(R, list) or len(R) != 9:
+                errors.append(
+                    f"{prefix}.R must be a list of 9 floats (row-major 3×3)."
+                )
+            else:
+                # Cheap orthogonality check: ||RᵀR − I||_F should be small.
+                import numpy as _np
+                Rm = _np.asarray(R, dtype=_np.float64).reshape(3, 3)
+                err = _np.linalg.norm(Rm.T @ Rm - _np.eye(3), ord="fro")
+                if err > 1e-3:
+                    errors.append(
+                        f"{prefix}.R is not orthonormal "
+                        f"(||RᵀR − I||={err:.3e}, expected <1e-3). "
+                        "Check the matrix values."
+                    )
+        t = ext.get("t")
+        if t is not None and (not isinstance(t, list) or len(t) != 3):
+            errors.append(f"{prefix}.t must be a list of 3 floats (metres).")
+
+    # Pose estimator
+    pe_raw = raw.get("pose_estimator", {})
+    pe_type = pe_raw.get("type", "null")
+    if pe_type not in ("null", "orbslam", "dpvo"):
+        errors.append(
+            f"pose_estimator.type={pe_type!r} is invalid. "
+            "Supported: 'null', 'dpvo' (implemented), 'orbslam' (planned)."
+        )
+    _require_positive_int(errors, pe_raw, "pose_estimator.stride")
+    _require_positive_int(errors, pe_raw, "pose_estimator.patches_per_frame")
+
     # Visualization
     vis = raw.get("visualization", {})
     vas = vis.get("velocity_arrow_scale", 0.5)
@@ -574,7 +702,22 @@ def _build(raw: dict) -> PipelineConfig:
     ekf_pn = ekf.get("process_noise", {})
     ekf_mn = ekf.get("measurement_noise", {})
     de = raw.get("depth", {})
+    wm = raw.get("world_model", {})
+    cf = raw.get("coordinate_frames", {})
+    pe = raw.get("pose_estimator", {})
 
+    static_ext_raw = cf.get("static_extrinsics", []) or []
+    static_extrinsics = [
+        StaticExtrinsicConfig(
+            parent=str(e.get("parent", "base_link")),
+            child= str(e.get("child",  "camera_frame")),
+            R=     [float(x) for x in e.get(
+                "R", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+            )],
+            t=     [float(x) for x in e.get("t", [0.0, 0.0, 0.0])],
+        )
+        for e in static_ext_raw
+    ]
 
     return PipelineConfig(
         pipeline=PipelineSettings(
@@ -686,5 +829,22 @@ def _build(raw: dict) -> PipelineConfig:
             split=        str(b.get("split", "train")),
             sequences=    b.get("sequences"),
             output_dir=   str(b.get("output_dir", "data/benchmark_results")),
+        ),
+        world_model=WorldModelConfig(
+            max_history=    int(wm.get("max_history", 30)),
+            lost_timeout_s= float(wm.get("lost_timeout_s", 1.0)),
+            camera_frame=   str(wm.get("camera_frame", "camera_frame")),
+        ),
+        coordinate_frames=CoordinateFramesConfig(
+            enabled=           bool(cf.get("enabled", False)),
+            root_frame=        str(cf.get("root_frame", "map")),
+            camera_frame=      str(cf.get("camera_frame", "camera_frame")),
+            static_extrinsics= static_extrinsics,
+        ),
+        pose_estimator=PoseEstimatorConfig(
+            type=              str(pe.get("type", "null")),
+            checkpoint=        pe.get("checkpoint"),
+            stride=            int(pe.get("stride", 2)),
+            patches_per_frame= int(pe.get("patches_per_frame", 96)),
         ),
     )

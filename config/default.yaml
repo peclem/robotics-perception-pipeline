@@ -85,6 +85,25 @@ visualization:
 world_model:
   max_history: 30
   lost_timeout_s: 1.5
+  camera_frame: camera_frame
+coordinate_frames:
+  enabled: false
+  root_frame: map
+  camera_frame: camera_frame
+  # Static extrinsics applied at startup. Each entry is a parent→child SE(3).
+  # Example: identity-mounted camera on a robot base_link
+  # static_extrinsics:
+  #   - parent: base_link
+  #     child:  camera_frame
+  #     R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+  #     t: [0.0, 0.0, 0.10]
+  static_extrinsics: []
+pose_estimator:
+  type: "null"   # 'null' | 'dpvo' (implemented) | 'orbslam' (planned)
+  # DPVO-specific (only consulted when type == 'dpvo')
+  checkpoint: null          # null → third_party/DPVO/models/dpvo.pth
+  stride: 2                 # run DPVO every Nth frame → pose at 30/stride Hz
+  patches_per_frame: 96     # DPVO accuracy/speed knob (lower = faster, less accurate)
 benchmark:
   dataset_path: data/MOT17
   split: train

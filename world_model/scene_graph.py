@@ -47,6 +47,9 @@ import numpy as np
 
 from tracking.track import Track
 from world_model.object_state import ObjectState
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from perception.transform_tree import TransformTree
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +74,11 @@ class SceneGraph:
     obj    = sg.get_state(track_id=3)
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(
+        self,
+        config: dict,
+        transform_tree: Optional["TransformTree"] = None,
+    ) -> None:
         self._config = config
         cfg = config.get("world_model", {})
 
@@ -80,6 +87,12 @@ class SceneGraph:
 
         # How long (seconds) to keep a LOST object before pruning it
         self._lost_timeout: float = float(cfg.get("lost_timeout_s", 1.0))
+
+        # Optional coordinate frame manager. When set, position_world is
+        # computed by tree lookup (camera_frame → root). When None,
+        # falls back to applying CameraPose directly (single-link case).
+        self._tree: Optional["TransformTree"] = transform_tree
+        self._camera_frame: str = cfg.get("camera_frame", "camera_frame")
 
         self._objects: Dict[int, ObjectState] = {}
         self._frame_count: int = 0
@@ -150,7 +163,7 @@ class SceneGraph:
             obj.velocity   = track.velocity.copy()
             obj.score      = track.score
             obj.last_seen  = timestamp
-            obj.n_updates  = track.n_update
+            obj.n_updates  = track.n_hits
             obj.is_lost    = is_lost
             obj.class_id   = track.class_id
             obj.class_name = track.class_name
@@ -165,19 +178,50 @@ class SceneGraph:
                 velocity   = track.velocity.copy(),
                 score      = track.score,
                 last_seen  = timestamp,
-                n_updates  = track.n_update,
+                n_updates  = track.n_hits,
                 is_lost    = is_lost,
                 max_history= self._max_history,
             )
-#       Update metric 3D position if available
-        if depth_estimate is not None and depth_estimate.position_3d is not None:
-            obj.position_3d = depth_estimate.position_3d.copy()
             obj.add_snapshot(snap)
             self._objects[track.track_id] = obj
             log.debug(
                 "SceneGraph: new object id=%d class=%s",
                 track.track_id, track.class_name,
             )
+
+        if depth_estimate is not None and depth_estimate.position_3d is not None:
+            obj.position_3d = depth_estimate.position_3d.copy()
+            obj.position_world = self._to_world(obj.position_3d, camera_pose)
+
+    def _to_world(
+        self,
+        p_camera: np.ndarray,
+        camera_pose,
+    ) -> Optional[np.ndarray]:
+        """
+        Lift a camera-frame metric point into the world (root) frame.
+
+        Two paths:
+          1. TransformTree is configured → look up camera_frame → root.
+             Caller is responsible for keeping the tree updated each frame
+             (typically via tree.update_from_camera_pose(camera_pose)).
+          2. No tree, raw CameraPose provided → apply pose directly.
+             Single-link shortcut for the common case.
+
+        Returns None when neither source of ego-pose is available.
+        """
+        if self._tree is not None:
+            try:
+                return self._tree.transform_point(
+                    p_camera,
+                    target=self._tree.root,
+                    source=self._camera_frame,
+                )
+            except (KeyError, ValueError):
+                return None
+        if camera_pose is not None:
+            return camera_pose.transform_point(p_camera)
+        return None
 
     def _prune(self, now: float) -> None:
         """Remove objects that have been LOST for longer than lost_timeout_s."""
@@ -218,6 +262,7 @@ class SceneGraph:
         radius:   float,
         include_lost:    bool = False,
         use_mahalanobis: bool = False,
+        frame:           str = "camera",
     ) -> List[Tuple[float, ObjectState]]:
         """
         Return all objects within a given radius of a query position,
@@ -225,12 +270,18 @@ class SceneGraph:
 
         Parameters
         ----------
-        position        : (2,) query point [x, y] in pixel coordinates.
-        radius          : search radius in pixels.
+        position        : query point. (2,) pixels for frame='camera',
+                          (3,) metres for frame='world'.
+        radius          : search radius in the same unit as `position`
+                          (pixels for camera frame, metres for world frame).
         include_lost    : if True, include LOST objects in results.
                           Useful for planning around recently-seen obstacles.
-        use_mahalanobis : if True, use Mahalanobis distance (uncertainty-aware)
-                          instead of Euclidean.
+        use_mahalanobis : (camera frame only) use Mahalanobis distance
+                          instead of Euclidean. Ignored for world-frame queries.
+        frame           : 'camera' → 2D pixel query against ObjectState.position
+                          'world'  → 3D metric query against ObjectState.position_world
+                          Objects without world position are skipped silently
+                          in world-frame mode.
 
         Returns
         -------
@@ -239,25 +290,43 @@ class SceneGraph:
 
         Robotics use
         ------------
-        A path planner calls this every control cycle:
-            obstacles = sg.query_nearby(robot_pos, radius=300)
-            for dist, obj in obstacles:
-                costmap.inflate(obj.position, obj.position_std)
+        Camera-frame (legacy 2D):
+            obstacles = sg.query_nearby(robot_pos_px, radius=300)
+
+        World-frame (planner-ready):
+            obstacles = sg.query_nearby(
+                robot_pos_m, radius=2.0, frame='world')
+            for dist_m, obj in obstacles:
+                costmap.inflate(obj.position_world, obj.position_std)
         """
         position = np.asarray(position, dtype=np.float64)
         results: List[Tuple[float, ObjectState]] = []
 
-        for obj in self._objects.values():
-            if obj.is_lost and not include_lost:
-                continue
+        if frame == "world":
+            for obj in self._objects.values():
+                if obj.is_lost and not include_lost:
+                    continue
+                if obj.position_world is None:
+                    continue
+                dist = float(np.linalg.norm(obj.position_world - position))
+                if dist <= radius:
+                    results.append((dist, obj))
+        elif frame == "camera":
+            for obj in self._objects.values():
+                if obj.is_lost and not include_lost:
+                    continue
 
-            if use_mahalanobis:
-                dist = obj.mahalanobis_to(position)
-            else:
-                dist = obj.distance_to(position)
+                if use_mahalanobis:
+                    dist = obj.mahalanobis_to(position)
+                else:
+                    dist = obj.distance_to(position)
 
-            if dist <= radius:
-                results.append((dist, obj))
+                if dist <= radius:
+                    results.append((dist, obj))
+        else:
+            raise ValueError(
+                f"frame must be 'camera' or 'world', got '{frame}'"
+            )
 
         results.sort(key=lambda t: t[0])
         return results

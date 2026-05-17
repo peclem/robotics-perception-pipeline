@@ -36,6 +36,7 @@ from visualization.debug_vis import DebugVisualizer
 from world_model.scene_graph import SceneGraph
 from perception.depth_estimator import DepthAnythingEstimator, NullDepthEstimator
 from perception.pose_estimator import NullPoseEstimator, CameraPose
+from perception.transform_tree import TransformTree
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -80,6 +81,7 @@ class Pipeline:
         self._scene_graph: Optional[SceneGraph] = None
         self._depth_estimator = None
         self._pose_estimator = None
+        self._transform_tree: Optional[TransformTree] = None
 
     # ------------------------------------------------------------------
     # Public
@@ -136,13 +138,51 @@ class Pipeline:
             log.info("ZoeDepth ready. Latency: %.1f ms", self._depth_estimator.mean_inference_ms)
         else:
             self._depth_estimator = NullDepthEstimator()
-        self._pose_estimator = NullPoseEstimator()
+        self._pose_estimator = self._build_pose_estimator(raw)
+
+        # Coordinate frame manager. Disabled by default — when enabled,
+        # registers static extrinsics from config and is updated each
+        # frame from camera_pose. The SceneGraph reads position_world
+        # via the tree when present, falling back to direct CameraPose
+        # application otherwise.
+        self._transform_tree = self._build_transform_tree()
 
         self._tracker    = ByteTracker(raw)
-        self._scene_graph = SceneGraph(raw)
+        self._scene_graph = SceneGraph(raw, transform_tree=self._transform_tree)
         self._visualizer = DebugVisualizer(cfg)
         self._visualizer.connect_rerun()
         self._writer     = None
+
+    def _build_pose_estimator(self, raw: dict):
+        """Factory for PoseEstimator backends keyed on pose_estimator.type."""
+        pe_type = self._cfg.pose_estimator.type
+        if pe_type == "null":
+            return NullPoseEstimator()
+        if pe_type == "dpvo":
+            from perception.dpvo_pose_estimator import DPVOPoseEstimator
+            est = DPVOPoseEstimator(raw)
+            log.info("PoseEstimator: %r", est)
+            return est
+        raise ValueError(
+            f"Unknown pose_estimator.type={pe_type!r}. "
+            "Supported: 'null', 'dpvo'."
+        )
+
+    def _build_transform_tree(self) -> Optional[TransformTree]:
+        """Construct TransformTree from config, or None when disabled."""
+        cf = self._cfg.coordinate_frames
+        if not cf.enabled:
+            return None
+        tree = TransformTree(root_frame=cf.root_frame)
+        for ext in cf.static_extrinsics:
+            R = np.asarray(ext.R, dtype=np.float64).reshape(3, 3)
+            t = np.asarray(ext.t, dtype=np.float64)
+            tree.set_static(parent=ext.parent, child=ext.child, R=R, t=t)
+        log.info(
+            "TransformTree enabled (root=%s, %d static extrinsics)",
+            cf.root_frame, len(cf.static_extrinsics),
+        )
+        return tree
 
     def _build_camera(self, raw: dict):
         cfg = self._cfg
@@ -249,6 +289,11 @@ class Pipeline:
                         depth_map[track.track_id] = depth_estimates_list[best_idx]
 
             camera_pose = self._pose_estimator.estimate(frame)
+            if self._transform_tree is not None and camera_pose is not None:
+                self._transform_tree.update_from_camera_pose(
+                    camera_pose,
+                    camera_frame=self._cfg.coordinate_frames.camera_frame,
+                )
             self._scene_graph.update(
                 confirmed_tracks=confirmed_tracks,
                 lost_tracks=self._tracker.lost_tracks,

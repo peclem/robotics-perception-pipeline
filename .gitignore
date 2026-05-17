@@ -24,3 +24,17 @@ Thumbs.db
 
 # Build
 *.egg-info/
+
+# Detector training output (ultralytics runs/)
+runs/
+
+# Third-party source clones (DPVO, etc. — clone + build per README)
+third_party/
+
+# ROS2 colcon build artifacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Misc downloaded installer leftovers
+*.deb

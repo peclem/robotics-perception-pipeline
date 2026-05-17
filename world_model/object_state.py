@@ -63,7 +63,8 @@ class ObjectState:
     last_seen:  float               # time.monotonic()
     n_updates:  int
     is_lost:    bool                = False
-    position_3d: Optional[np.ndarray] = None   # (3,) [X, Y, Z] in metres, None if unavailable
+    position_3d: Optional[np.ndarray] = None   # (3,) [X, Y, Z] in metres, camera frame; None if unavailable
+    position_world: Optional[np.ndarray] = None  # (3,) [X, Y, Z] in metres, world (map) frame; None if no ego-pose
     max_history: int                = 30
     history:    Deque[KFSnapshot]   = field(
         default_factory=lambda: deque(maxlen=30)
