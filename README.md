@@ -20,8 +20,11 @@ marked. Unimplemented components and their integration points are identified.
     ║                                                                  ║
     ║  [✓] Monocular RGB        CameraInterface ABC                    ║
     ║  [✓] Camera calibration   scripts/calibrate_camera.py           ║
+    ║  [✓] IMU (synthetic)      IMUInterface ABC + SyntheticIMU,       ║
+    ║                           Forster pre-integration with           ║
+    ║                           uncertainty Jacobians.                 ║
+    ║                           Real-hardware backend pending.         ║
     ║  [ ] Stereo camera        CameraInterface ABC — drop-in backend  ║
-    ║  [ ] IMU                  error-state EKF input                  ║
     ║  [ ] LiDAR                point cloud processing                 ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
@@ -47,7 +50,9 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] Monocular ego-pose       DPVO (deep patch VO), 15 Hz       ║
     ║  [ ] ReID embeddings          OSNet, IoU + cosine cost          ║
     ║  [ ] Stereo depth             StereoDepthEstimator ABC          ║
-    ║  [ ] IMU pre-integration      error-state EKF fusion            ║
+    ║  [✓] IMU pre-integration      Forster (2017) ΔR/Δv/Δp +         ║
+    ║                               covariance Jacobians. Bias-free   ║
+    ║                               v1; VIO fuser pending.            ║
     ║  [ ] Semantic segmentation    —                                  ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
@@ -458,13 +463,14 @@ extension first — see "DPVO setup" above.
 
     python3 -m pytest tests/ -m "not integration" -v
 
-487 unit tests across detection, tracking, state estimation, world
-model, coordinate frames (TransformTree), DPVO wrapper, occupancy
-grid, stability classification, appearance extractor, WorldMap,
-health monitor, visualisation, and benchmarks. All tests use
-SyntheticCamera or synthetic data — no hardware required. Integration
-tests (real GPU, live DPVO / DINOv2 models) are marked and excluded
-from CI; run with `pytest -m integration`.
+517 unit tests across detection, tracking, state estimation (including
+IMU pre-integration), world model, coordinate frames (TransformTree),
+DPVO wrapper, occupancy grid, stability classification, appearance
+extractor, WorldMap, health monitor, IMU interface, visualisation, and
+benchmarks. All tests use SyntheticCamera / synthetic IMU / synthetic
+data — no hardware required. Integration tests (real GPU, live DPVO /
+DINOv2 models) are marked and excluded from CI; run with
+`pytest -m integration`.
 
 ---
 
@@ -571,10 +577,11 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
     perception/          Camera interface, detector, depth estimator,
                           pose estimator (Null + DPVO), appearance
-                          extractor (Null + DINOv2), TransformTree,
-                          typed config
+                          extractor (Null + DINOv2), IMU interface
+                          (Null + Synthetic), TransformTree, typed config
     tracking/            ByteTrack, association, motion compensation, Track
-    state_estimation/    Kalman Filter, Extended KF, NIS/NEES diagnostics
+    state_estimation/    Kalman Filter, Extended KF, NIS/NEES
+                          diagnostics, IMU pre-integration (Forster 2017)
     world_model/         SceneGraph, ObjectState (+ position_world,
                           stability, persistent_id), spatial queries
                           (camera- and world-frame), OccupancyGridBuilder
@@ -594,7 +601,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               419 unit tests — all hardware-free; integration
+    tests/               517 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 
@@ -628,10 +635,18 @@ Adding an OSNet or FastReID backbone as an AppearanceExtractor module
 enables track re-identification after long occlusion without changes
 to the tracker or world model.
 
-**IMU fusion.** The ExtendedKalmanFilter CTR model includes a turn rate
-state ω that is directly observable from a gyroscope. Adding an IMU
-measurement function closes the loop between the motion model and
-physical sensor data, improving velocity estimates under camera motion.
+**IMU-VIO fusion.** The IMU pipe is built: `IMUInterface` ABC,
+`SyntheticIMU` backend, Forster (2017) pre-integration with
+`PreintegratedMeasurement` (ΔR, Δv, Δp + 9×9 covariance). What's
+missing is the *fuser* — an error-state EKF or factor-graph
+back-end that consumes pre-integrated measurements between camera
+keyframes and updates ego-pose. Practical options when hardware
+lands: switch DPVO out for a VIO backbone (OpenVINS, VINS-Fusion,
+ORB-SLAM3 with IMU), OR write a custom error-state EKF that fuses
+DPVO's pose updates with the pre-integrated IMU constraints. v1
+of pre-integration assumes zero/pre-calibrated biases; adding
+first-order bias Jacobians (∂ΔR/∂b_g, ∂Δv/∂b_a, ∂Δp/∂b_a) is the
+next math step.
 
 **Stereo depth.** The DepthEstimator ABC accepts a StereoDepthEstimator
 as a drop-in replacement for DepthAnythingEstimator. Stereo triangulation
@@ -654,6 +669,8 @@ estimation, with no additional inference cost at runtime.
     Campos et al. (2021)             ORB-SLAM3 — arXiv:2007.11898
     Teed, Lipson & Deng (2023)       DPVO — arXiv:2208.04726
     Foote (2013)                     tf: the transform library (ICRA)
+    Forster et al. (2017)            On-Manifold Pre-integration for
+                                     VIO — arXiv:1512.02363
 
 ---
 

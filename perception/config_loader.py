@@ -337,6 +337,45 @@ class CoordinateFramesConfig:
 
 
 @dataclass
+class IMUConfig:
+    """
+    IMU backend selection + noise model + synthetic-source params.
+
+    type
+        'null'      — NullIMU (no IMU data; pre-integration returns identity)
+        'synthetic' — SyntheticIMU (configurable motion preset; useful
+                      for offline pre-integration validation)
+        Real-hardware backends slot in here ('bno055', 'bmi088', etc.)
+        when the project gets actual sensors.
+
+    frame_id
+        TF frame the IMU samples are expressed in. Static extrinsic
+        base_link → imu_link defines the rigid mounting; pre-integrated
+        measurements then sit naturally in base_link via the tree.
+
+    Noise densities (sigma_*_n)
+        From the IMU datasheet's noise spec ("rate noise density" for
+        gyro, "noise density" for accel). Defaults match a good MEMS
+        chip (Bosch BMI088 ballpark). The pre-integrator uses these
+        for covariance propagation.
+
+    Synthetic-only fields apply when type == 'synthetic'.
+    """
+    type:             str   = "null"
+    frame_id:         str   = "imu_link"
+    rate_hz:          float = 200.0
+    sigma_gyro_n:     float = 1.7e-4   # rad/s/√Hz
+    sigma_accel_n:    float = 2.0e-3   # m/s²/√Hz
+    synthetic_motion: str   = "stationary_with_gravity"
+    synthetic_noise_std_accel: float = 0.0
+    synthetic_noise_std_gyro:  float = 0.0
+    synthetic_seed:   int   = 0
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class HealthMonitorConfig:
     """
     Per-stage latency budgets + breach thresholds. Each entry in
@@ -481,6 +520,7 @@ class PipelineConfig:
     appearance:             AppearanceConfig           = field(default_factory=AppearanceConfig)
     world_map:              WorldMapConfig             = field(default_factory=WorldMapConfig)
     health_monitor:         HealthMonitorConfig        = field(default_factory=HealthMonitorConfig)
+    imu:                    IMUConfig                  = field(default_factory=IMUConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -508,6 +548,7 @@ class PipelineConfig:
             "appearance":             self.appearance.as_dict(),
             "world_map":              self.world_map.as_dict(),
             "health_monitor":         self.health_monitor.as_dict(),
+            "imu":                    self.imu.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -777,6 +818,18 @@ def _validate(raw: dict) -> None:
             "Supported: 'null', 'dinov2'."
         )
 
+    # IMU
+    imu_raw = raw.get("imu", {})
+    imu_type = imu_raw.get("type", "null")
+    if imu_type not in ("null", "synthetic"):
+        errors.append(
+            f"imu.type={imu_type!r} is invalid. "
+            "Supported: 'null', 'synthetic'."
+        )
+    _require_positive_float(errors, imu_raw, "imu.rate_hz")
+    _require_positive_float(errors, imu_raw, "imu.sigma_gyro_n")
+    _require_positive_float(errors, imu_raw, "imu.sigma_accel_n")
+
     # World map
     wmap_raw = raw.get("world_map", {})
     _require_positive_float(errors, wmap_raw, "world_map.spatial_gate_m")
@@ -839,6 +892,7 @@ def _build(raw: dict) -> PipelineConfig:
     ap = raw.get("appearance", {})
     wmap = raw.get("world_map", {})
     hm = raw.get("health_monitor", {})
+    imu = raw.get("imu", {})
 
     static_ext_raw = cf.get("static_extrinsics", []) or []
     static_extrinsics = [
@@ -1018,5 +1072,19 @@ def _build(raw: dict) -> PipelineConfig:
                 str(k): float(v) for k, v in
                 (hm.get("stage_budgets_ms") or {}).items()
             } or HealthMonitorConfig().stage_budgets_ms,
+        ),
+        imu=IMUConfig(
+            type=             str(imu.get("type", "null")),
+            frame_id=         str(imu.get("frame_id", "imu_link")),
+            rate_hz=          float(imu.get("rate_hz", 200.0)),
+            sigma_gyro_n=     float(imu.get("sigma_gyro_n",  1.7e-4)),
+            sigma_accel_n=    float(imu.get("sigma_accel_n", 2.0e-3)),
+            synthetic_motion= str(imu.get("synthetic_motion",
+                                          "stationary_with_gravity")),
+            synthetic_noise_std_accel=
+                              float(imu.get("synthetic_noise_std_accel", 0.0)),
+            synthetic_noise_std_gyro=
+                              float(imu.get("synthetic_noise_std_gyro", 0.0)),
+            synthetic_seed=   int(imu.get("synthetic_seed", 0)),
         ),
     )

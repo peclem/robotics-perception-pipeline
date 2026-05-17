@@ -132,6 +132,18 @@ world_map:
   spatial_gate_m: 1.5       # re-association candidates within this distance
   similarity_threshold: 0.75   # cosine threshold ∈ [-1, 1]
   allow_spatial_only: true  # fall back to spatial-only when embeddings missing
+imu:
+  type: "null"          # 'null' | 'synthetic' (hardware backends slot in here)
+  frame_id: "imu_link"
+  rate_hz: 200.0        # typical MEMS rate
+  # Noise densities from IMU datasheet (defaults ~ Bosch BMI088 spec):
+  sigma_gyro_n:  1.7e-4 # rad/s/√Hz
+  sigma_accel_n: 2.0e-3 # m/s²/√Hz
+  # Synthetic-only:
+  synthetic_motion: "stationary_with_gravity"
+  synthetic_noise_std_accel: 0.0
+  synthetic_noise_std_gyro:  0.0
+  synthetic_seed: 0
 health_monitor:
   enabled: true             # per-stage latency budgets + diagnostics
   warn_after:  3            # consecutive budget breaches → WARN
