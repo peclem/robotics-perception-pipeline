@@ -38,6 +38,17 @@ def generate_launch_description():
         "config_path", default_value="config/default.yaml",
         description="Project config YAML",
     )
+    # Image downscale before DDS publish — biggest ROS2 throughput lever.
+    # 1280×720 → 640×480 cuts DDS payload ~3×; standalone pipeline already
+    # uses 640×480 by default so we lose nothing.
+    pw_arg = DeclareLaunchArgument(
+        "publish_width",  default_value="640",
+        description="Downscale width before publish; 0 = source resolution",
+    )
+    ph_arg = DeclareLaunchArgument(
+        "publish_height", default_value="480",
+        description="Downscale height before publish; 0 = source resolution",
+    )
 
     common_params = [{"config_path": LaunchConfiguration("config_path")}]
 
@@ -48,8 +59,10 @@ def generate_launch_description():
             name="camera_publisher",
             output="screen",
             parameters=common_params + [{
-                "source":     LaunchConfiguration("source"),
-                "video_path": LaunchConfiguration("video_path"),
+                "source":         LaunchConfiguration("source"),
+                "video_path":     LaunchConfiguration("video_path"),
+                "publish_width":  LaunchConfiguration("publish_width"),
+                "publish_height": LaunchConfiguration("publish_height"),
             }],
         ),
         Node(
@@ -96,4 +109,6 @@ def generate_launch_description():
         ),
     ]
 
-    return LaunchDescription([source_arg, video_arg, config_arg, *nodes])
+    return LaunchDescription([
+        source_arg, video_arg, config_arg, pw_arg, ph_arg, *nodes,
+    ])

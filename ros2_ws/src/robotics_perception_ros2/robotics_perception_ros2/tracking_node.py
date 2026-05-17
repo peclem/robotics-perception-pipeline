@@ -43,7 +43,13 @@ from robotics_perception_ros2.image_bridge import imgmsg_to_numpy
 
 class TrackingNode(Node):
 
-    def __init__(self) -> None:
+    def __init__(self, *, enable_intra_process: bool = False) -> None:
+        # Note: Python rclpy in Humble doesn't expose use_intra_process_comms
+        # as a Node kwarg (C++ ComposableNodeContainer only). enable_intra_process
+        # is kept on the signature so the composite launcher can pass it for
+        # future-proofing; it's currently a no-op at this layer. Real savings
+        # from the composite come from a single CUDA context + reduced
+        # process overhead.
         super().__init__("tracking_node")
 
         self.declare_parameter("config_path", "config/default.yaml")

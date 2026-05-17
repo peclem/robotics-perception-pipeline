@@ -44,6 +44,8 @@ setup(
             f"{package_name}.occupancy_grid_node:main",
             "health_monitor_node = "
             f"{package_name}.health_monitor_node:main",
+            "composite_node = "
+            f"{package_name}.composite_node:main",
         ],
     },
 )

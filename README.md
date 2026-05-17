@@ -415,9 +415,26 @@ graph runs at ~6 Hz at 1280×720 due to:
 - Synchronous callback chains across 5 processes
 
 The graph is a faithful adapter, not a tuned production deployment.
-Knock-on optimisations (image_transport compression, intra-process
-composition via component containers, shared CUDA context) are
-deferred to Phase 4 production robustness work.
+
+**Phase 4 perf attempts (honestly reported):**
+
+- *Image downscale to 640×480* — `publish_width:=640 publish_height:=480`
+  reduces DDS payload ~3×. On this stack (Python rclpy + Fast-DDS +
+  WSL2): negligible throughput improvement (~6 Hz unchanged).
+  Bandwidth wasn't the bottleneck. Likely useful on lower-spec
+  hardware or constrained network deployments.
+- *Composite launcher* — `perception_pipeline_composite.launch.py`
+  runs all nodes in a single Python process under a
+  `MultiThreadedExecutor`. Goal: shared CUDA context + zero-copy IPC.
+  Reality: Python `rclpy` does **not** expose
+  `use_intra_process_comms` (C++ `ComposableNodeContainer` only), so
+  messages still serialise. Combined with GIL contention, throughput
+  is slightly *worse* (~5 Hz) than the multi-process variant.
+
+The real fix on this stack is a C++ rewrite of the adapter nodes as
+composable components. Deferred — multi-process Python at 6 Hz is
+adequate for demonstrating the graph; real production deployments
+would invest in the C++ port.
 
 ### Lossiness across the ROS boundary
 
