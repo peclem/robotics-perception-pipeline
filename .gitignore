@@ -38,3 +38,6 @@ ros2_ws/log/
 
 # Misc downloaded installer leftovers
 *.deb
+
+# Local-only project instructions for Claude (not shared with collaborators)
+CLAUDE.md
