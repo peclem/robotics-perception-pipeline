@@ -85,7 +85,12 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] Metric 3D positions      position_3d from depth            ║
     ║  [✓] Spatial queries          query_nearby(pos, radius)         ║
     ║  [✓] Uncertainty queries      Mahalanobis distance              ║
-    ║  [ ] Static occupancy grid    prerequisite for Nav2 costmap     ║
+    ║  [✓] Dynamic obstacle grid    nav_msgs/OccupancyGrid,           ║
+    ║                               2σ-covariance inflation per       ║
+    ║                               object, depth-projected when      ║
+    ║                               available                         ║
+    ║  [ ] Static obstacle layer    pre-mapped walls/furniture;       ║
+    ║                               needs SLAM                        ║
     ║  [ ] Persistent map           SLAM integration                  ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
@@ -93,10 +98,15 @@ marked. Unimplemented components and their integration points are identified.
     ╔══════════════════════════════════════════════════════════════════╗
     ║  PLANNING INTERFACE                                              ║
     ║                                                                  ║
-    ║  SceneGraph.query_nearby(robot_position, radius)                 ║
+    ║  Python API:                                                     ║
+    ║    SceneGraph.query_nearby(robot_position, radius,               ║
+    ║                            frame='camera' | 'world')             ║
     ║      → List[(distance, ObjectState)] sorted, with covariance    ║
-    ║      → costmap inflation by 2σ ellipse per object               ║
-    ║      → local planner input (DWA / TEB / MPC)                   ║
+    ║                                                                  ║
+    ║  ROS2 API:                                                       ║
+    ║    /perception/scene    vision_msgs/Detection3DArray             ║
+    ║    /perception/costmap  nav_msgs/OccupancyGrid (dynamic layer)   ║
+    ║    /tf                  map → camera_frame (when ego-pose on)    ║
     ║                                                                  ║
     ║  [ ] Global planner           Nav2 / RRT / A*                   ║
     ║  [ ] Local planner            DWA / TEB / MPC                   ║
@@ -347,6 +357,11 @@ behind both — the ROS2 layer is an adapter, not a port.
                                                                    (vision_msgs/Detection3DArray
                                                                     with covariance)
 
+    /perception/scene  ──▶ occupancy_grid_node ──▶ /perception/costmap
+                                                   (nav_msgs/OccupancyGrid,
+                                                    20×20 m @ 5 cm/cell,
+                                                    2σ-inflated dynamic layer)
+
 ### Setup
 
     # 1. Install ROS2 Humble (see https://docs.ros.org/en/humble/Installation.html)
@@ -409,11 +424,12 @@ extension first — see "DPVO setup" above.
 
     python3 -m pytest tests/ -m "not integration" -v
 
-419 unit tests across detection, tracking, state estimation, world
-model, coordinate frames (TransformTree), DPVO wrapper, visualisation,
-and benchmarks. All tests use SyntheticCamera or synthetic data —
-no hardware required. Integration tests (real GPU, live DPVO model)
-are marked and excluded from CI; run with `pytest -m integration`.
+428 unit tests across detection, tracking, state estimation, world
+model, coordinate frames (TransformTree), DPVO wrapper, occupancy
+grid, visualisation, and benchmarks. All tests use SyntheticCamera
+or synthetic data — no hardware required. Integration tests (real
+GPU, live DPVO model) are marked and excluded from CI; run with
+`pytest -m integration`.
 
 ---
 
@@ -443,6 +459,18 @@ All parameters are externalised in config/default.yaml.
         root_frame: map
         camera_frame: camera_frame
         static_extrinsics: []   # parent→child SE(3) edges, e.g. base_link → camera_frame
+
+    occupancy_grid:
+        enabled: false      # publish nav_msgs/OccupancyGrid from the scene graph
+        resolution_m: 0.05  # 5 cm per cell (Nav2 default)
+        size_x_m: 20.0
+        size_y_m: 20.0
+        origin_x_m: -10.0   # grid centred at world origin
+        origin_y_m: -10.0
+        default_inflation_m: 0.5
+        per_class_inflation_m:
+            person: 0.40
+            car:    2.00
 
 Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
@@ -476,7 +504,8 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
     tracking/            ByteTrack, association, motion compensation, Track
     state_estimation/    Kalman Filter, Extended KF, NIS/NEES diagnostics
     world_model/         SceneGraph, ObjectState (+ position_world),
-                          spatial queries (camera- and world-frame)
+                          spatial queries (camera- and world-frame),
+                          OccupancyGridBuilder (dynamic obstacle layer)
     visualization/       Rerun.io logger, OpenCV annotator
     ros2_ws/             ROS2 colcon workspace
                           src/robotics_perception_ros2/
@@ -485,6 +514,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                             tracking_node            tracked Detection2DArray
                             pose_node                Odometry + tf broadcast
                             scene_graph_node         Detection3DArray
+                            occupancy_grid_node      OccupancyGrid (Nav2 costmap-ready)
     scripts/             Calibration, benchmark (MOT17, DPVO latency),
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)

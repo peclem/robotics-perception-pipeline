@@ -337,6 +337,34 @@ class CoordinateFramesConfig:
 
 
 @dataclass
+class OccupancyGridConfig:
+    """
+    Dynamic obstacle grid parameters. See world_model.OccupancyGridParams
+    for the matching builder dataclass; this just exposes the same knobs
+    in the validated config layer.
+    """
+    enabled:             bool             = False
+    resolution_m:        float            = 0.05
+    size_x_m:            float            = 20.0
+    size_y_m:            float            = 20.0
+    origin_x_m:          float            = -10.0
+    origin_y_m:          float            = -10.0
+    default_inflation_m: float            = 0.5
+    min_inflation_m:     float            = 0.10
+    per_class_inflation_m: Dict[str, float] = field(default_factory=lambda: {
+        "person":     0.40,
+        "bicycle":    0.60,
+        "car":        2.00,
+        "motorcycle": 0.80,
+        "bus":        3.00,
+        "truck":      2.50,
+    })
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class PoseEstimatorConfig:
     """
     Selects which PoseEstimator backend to instantiate.
@@ -382,6 +410,7 @@ class PipelineConfig:
     world_model:            WorldModelConfig           = field(default_factory=WorldModelConfig)
     coordinate_frames:      CoordinateFramesConfig     = field(default_factory=CoordinateFramesConfig)
     pose_estimator:         PoseEstimatorConfig        = field(default_factory=PoseEstimatorConfig)
+    occupancy_grid:         OccupancyGridConfig        = field(default_factory=OccupancyGridConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -405,6 +434,7 @@ class PipelineConfig:
             "world_model":            self.world_model.as_dict(),
             "coordinate_frames":      self.coordinate_frames.as_dict(),
             "pose_estimator":         self.pose_estimator.as_dict(),
+            "occupancy_grid":         self.occupancy_grid.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -667,6 +697,14 @@ def _validate(raw: dict) -> None:
     _require_positive_int(errors, pe_raw, "pose_estimator.stride")
     _require_positive_int(errors, pe_raw, "pose_estimator.patches_per_frame")
 
+    # Occupancy grid
+    og_raw = raw.get("occupancy_grid", {})
+    _require_positive_float(errors, og_raw, "occupancy_grid.resolution_m")
+    _require_positive_float(errors, og_raw, "occupancy_grid.size_x_m")
+    _require_positive_float(errors, og_raw, "occupancy_grid.size_y_m")
+    _require_positive_float(errors, og_raw, "occupancy_grid.default_inflation_m")
+    _require_positive_float(errors, og_raw, "occupancy_grid.min_inflation_m")
+
     # Visualization
     vis = raw.get("visualization", {})
     vas = vis.get("velocity_arrow_scale", 0.5)
@@ -705,6 +743,7 @@ def _build(raw: dict) -> PipelineConfig:
     wm = raw.get("world_model", {})
     cf = raw.get("coordinate_frames", {})
     pe = raw.get("pose_estimator", {})
+    og = raw.get("occupancy_grid", {})
 
     static_ext_raw = cf.get("static_extrinsics", []) or []
     static_extrinsics = [
@@ -846,5 +885,19 @@ def _build(raw: dict) -> PipelineConfig:
             checkpoint=        pe.get("checkpoint"),
             stride=            int(pe.get("stride", 2)),
             patches_per_frame= int(pe.get("patches_per_frame", 96)),
+        ),
+        occupancy_grid=OccupancyGridConfig(
+            enabled=               bool(og.get("enabled", False)),
+            resolution_m=          float(og.get("resolution_m", 0.05)),
+            size_x_m=              float(og.get("size_x_m", 20.0)),
+            size_y_m=              float(og.get("size_y_m", 20.0)),
+            origin_x_m=            float(og.get("origin_x_m", -10.0)),
+            origin_y_m=            float(og.get("origin_y_m", -10.0)),
+            default_inflation_m=   float(og.get("default_inflation_m", 0.5)),
+            min_inflation_m=       float(og.get("min_inflation_m", 0.10)),
+            per_class_inflation_m={
+                str(k): float(v) for k, v in
+                (og.get("per_class_inflation_m") or {}).items()
+            } or OccupancyGridConfig().per_class_inflation_m,
         ),
     )

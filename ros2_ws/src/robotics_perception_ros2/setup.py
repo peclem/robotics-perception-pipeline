@@ -40,6 +40,8 @@ setup(
             f"{package_name}.pose_node:main",
             "scene_graph_node = "
             f"{package_name}.scene_graph_node:main",
+            "occupancy_grid_node = "
+            f"{package_name}.occupancy_grid_node:main",
         ],
     },
 )

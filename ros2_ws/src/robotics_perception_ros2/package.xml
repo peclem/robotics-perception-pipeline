@@ -18,6 +18,8 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>vision_msgs</exec_depend>
+  <!-- nav_msgs covers both nav_msgs/Odometry (pose_node) and
+       nav_msgs/OccupancyGrid (occupancy_grid_node). -->
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>

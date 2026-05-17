@@ -110,7 +110,9 @@ address via image_transport + intra-process composition.
 4. Watchdog / health monitor with per-module latency budgets and
    graceful degradation
 5. Hardware timestamp sync (prerequisite for any multi-sensor work)
-6. Static occupancy grid (Nav2 costmap prerequisite)
+6. ~~Static occupancy grid~~ → done as **dynamic obstacle grid**
+   (2026-05-17). nav_msgs/OccupancyGrid via OccupancyGridBuilder +
+   occupancy_grid_node. Static layer needs SLAM and stays open.
 7. ReID appearance features behind an `AppearanceExtractor` ABC,
    wired into the existing cosine cost slot in
    `tracking/association.py`. SOTA backbone for 12 GB VRAM.

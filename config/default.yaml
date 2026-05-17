@@ -104,6 +104,22 @@ pose_estimator:
   checkpoint: null          # null → third_party/DPVO/models/dpvo.pth
   stride: 2                 # run DPVO every Nth frame → pose at 30/stride Hz
   patches_per_frame: 96     # DPVO accuracy/speed knob (lower = faster, less accurate)
+occupancy_grid:
+  enabled: false            # publish nav_msgs/OccupancyGrid from the scene graph
+  resolution_m: 0.05        # 5 cm per cell (Nav2 default)
+  size_x_m: 20.0
+  size_y_m: 20.0
+  origin_x_m: -10.0         # grid centred at world origin by default
+  origin_y_m: -10.0
+  default_inflation_m: 0.5  # radius for objects without per-class entry
+  min_inflation_m: 0.10     # floor on depth-projected covariance radius
+  per_class_inflation_m:    # fallback metric inflation per COCO class
+    person:     0.40
+    bicycle:    0.60
+    car:        2.00
+    motorcycle: 0.80
+    bus:        3.00
+    truck:      2.50
 benchmark:
   dataset_path: data/MOT17
   split: train

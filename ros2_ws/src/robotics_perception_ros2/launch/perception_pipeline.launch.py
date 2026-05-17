@@ -80,6 +80,13 @@ def generate_launch_description():
             output="screen",
             parameters=common_params,
         ),
+        Node(
+            package="robotics_perception_ros2",
+            executable="occupancy_grid_node",
+            name="occupancy_grid",
+            output="screen",
+            parameters=common_params,
+        ),
     ]
 
     return LaunchDescription([source_arg, video_arg, config_arg, *nodes])
