@@ -271,9 +271,55 @@ the model path in config/default.yaml.
     RERUN_ENABLED=false python3 launch.py --source synthetic
     RERUN_ENABLED=false python3 launch.py --source video --input data/clip.mp4
 
-To enable DPVO ego-pose, see third_party/DPVO build steps and set
-`pose_estimator.type: dpvo` in config/default.yaml. To launch the ROS2
-graph, see the "ROS2 integration" section below.
+To enable DPVO ego-pose, see "DPVO setup" below. To launch the ROS2
+graph, see "ROS2 integration" further down.
+
+---
+
+## DPVO setup (optional, for `pose_estimator.type: dpvo`)
+
+DPVO is a custom CUDA-extension PyTorch package. On the project's
+target stack (PyTorch 2.11 + CUDA 13.0, WSL2 Ubuntu 22.04) the
+upstream sources need three mechanical patches; the build is otherwise
+clean.
+
+    # 1. CUDA toolkit 13.0 (provides nvcc matching torch's cu130)
+    sudo apt install cuda-toolkit-13-0      # via NVIDIA's WSL apt repo
+
+    # 2. Clone DPVO and pull Eigen
+    mkdir -p third_party && cd third_party
+    git clone --recursive https://github.com/princeton-vl/DPVO.git
+    cd DPVO
+    wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip
+    unzip -q eigen-3.4.0.zip -d thirdparty
+
+    # 3. Python deps (matching torch 2.11 + cu130)
+    pip install wheel ninja numba einops pypose kornia yacs plyfile evo
+    pip install torch-scatter \
+        -f https://data.pyg.org/whl/torch-2.11.0+cu130.html
+
+    # 4. Patch deprecated PyTorch API in DPVO sources
+    find dpvo -name "*.cpp" -o -name "*.cu" -o -name "*.h" \
+        | xargs sed -i 's/\.type(), "/\.scalar_type(), "/g'
+    sed -i 's|::detail::scalar_type(the_type)|the_type|' \
+        dpvo/lietorch/include/dispatch.h
+
+    # 5. Build the CUDA extensions (force CUDA 13.0 on PATH)
+    CUDA_HOME=/usr/local/cuda-13.0 \
+        PATH=/usr/local/cuda-13.0/bin:$PATH \
+        pip install . --no-build-isolation
+
+    # 6. Download the pretrained checkpoint
+    wget "https://www.dropbox.com/s/nap0u8zslspdwm4/models.zip?dl=1" \
+        -O models.zip
+    unzip -o models.zip -d models/
+
+Verify:
+
+    python3 -c "from dpvo.dpvo import DPVO; print('DPVO OK')"
+    python3 scripts/benchmark_dpvo_latency.py    # ~17 ms median at 640×480
+
+Then set `pose_estimator.type: dpvo` in config/default.yaml.
 
 ---
 
@@ -355,7 +401,7 @@ custom message carrying the full filter state.
 Both the standalone and ROS2 paths read the same `config/default.yaml`.
 `pose_estimator.type: dpvo` switches the pose source from
 `NullPoseEstimator` to the real `DPVOPoseEstimator`. Build the DPVO
-extension first (see `third_party/DPVO/`).
+extension first — see "DPVO setup" above.
 
 ---
 
@@ -387,17 +433,35 @@ All parameters are externalised in config/default.yaml.
         enabled: false      # true = Depth Anything V2 metric depth
         model: "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 
+    pose_estimator:
+        type: "null"        # 'null' | 'dpvo'
+        stride: 2           # DPVO every Nth frame → pose at 30/stride Hz
+        patches_per_frame: 96
+
+    coordinate_frames:
+        enabled: false      # set true to use TransformTree for position_world
+        root_frame: map
+        camera_frame: camera_frame
+        static_extrinsics: []   # parent→child SE(3) edges, e.g. base_link → camera_frame
+
 Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
 ---
 
 ## Benchmark scripts
 
+    # MOT17 → YOLO format + fine-tuning
     python3 scripts/mot17_to_yolo.py --mot17 data/MOT17 --out data/mot17_yolo
     python3 scripts/train_detector.py --data data/mot17_yolo/mot17.yaml
+
+    # MOTA / MOTP / IDSW benchmark on MOT17 train split
     python3 scripts/benchmark.py \
         --dataset data/MOT17 --split train --out data/mot17_results
 
+    # DPVO per-frame latency sweep (resolution × patches × stride)
+    python3 scripts/benchmark_dpvo_latency.py
+
+    # Intrinsics calibration from a checkerboard
     python3 scripts/calibrate_camera.py \
         --device 0 --rows 9 --cols 6 \
         --out config/camera_intrinsics.yaml
