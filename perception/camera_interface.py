@@ -50,6 +50,10 @@ class CameraIntrinsics:
     width, height : sensor resolution
     dist_coeffs : distortion coefficients [k1, k2, p1, p2, k3]
                   Use np.zeros(5) for an undistorted or pre-rectified stream.
+    baseline_m  : stereo baseline (distance between left and right cameras).
+                  0.0 for monocular setups; positive for stereo rigs.
+                  Used by stereo depth estimators to convert disparity
+                  (in pixels) to metric depth via depth = fx * baseline / disparity.
 
     Robotics note
     -------------
@@ -66,6 +70,7 @@ class CameraIntrinsics:
     dist_coeffs: np.ndarray = field(
         default_factory=lambda: np.zeros(5, dtype=np.float64)
     )
+    baseline_m: float = 0.0
 
     def camera_matrix(self) -> np.ndarray:
         """Return the 3x3 intrinsic matrix K."""
@@ -128,6 +133,10 @@ class CameraFrame:
     frame_idx: int
     intrinsics: CameraIntrinsics
     source_id: str
+    # Optional right-eye image for stereo cameras. None for monocular.
+    # When present, StereoSGBMDepthEstimator (and any future stereo
+    # backend) uses it; monocular backends ignore it.
+    right_image: Optional[np.ndarray] = None
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -496,6 +505,7 @@ class SyntheticCamera(CameraInterface):
         fps: float = 30.0,
         num_objects: int = 2,
         seed: int = 42,
+        stereo_baseline_m: float = 0.0,
     ):
         super().__init__(config)
         self._width = width
@@ -503,6 +513,10 @@ class SyntheticCamera(CameraInterface):
         self._num_frames = num_frames
         self._fps = fps
         self._num_objects = num_objects
+        # When > 0, get_frame() also fills CameraFrame.right_image with
+        # a horizontally-shifted copy of the left view. Useful for
+        # exercising StereoSGBMDepthEstimator without real hardware.
+        self._stereo_baseline_m = float(stereo_baseline_m)
         self._rng = np.random.default_rng(seed)
         self._intrinsics: Optional[CameraIntrinsics] = None
         self._t0: float = 0.0
@@ -511,7 +525,17 @@ class SyntheticCamera(CameraInterface):
         self._objects: list[np.ndarray] = []
 
     def open(self) -> None:
-        self._intrinsics = _default_intrinsics(self._width, self._height)
+        base = _default_intrinsics(self._width, self._height)
+        if self._stereo_baseline_m > 0:
+            # Reconstruct frozen dataclass with baseline set.
+            self._intrinsics = CameraIntrinsics(
+                fx=base.fx, fy=base.fy, cx=base.cx, cy=base.cy,
+                width=base.width, height=base.height,
+                dist_coeffs=base.dist_coeffs,
+                baseline_m=self._stereo_baseline_m,
+            )
+        else:
+            self._intrinsics = base
         self._t0 = time.monotonic()
 
         # Initialise objects with random positions and velocities
@@ -559,12 +583,27 @@ class SyntheticCamera(CameraInterface):
 
         ts = self._t0 + self._frame_idx * dt
 
+        # For stereo mode, synthesise a right view by horizontally
+        # shifting the left image. Shift amount corresponds to objects
+        # at ~3 m depth assuming default intrinsics — gives StereoSGBM
+        # something meaningful to disparity-match against.
+        right_image: Optional[np.ndarray] = None
+        if self._stereo_baseline_m > 0:
+            # disparity_px ≈ fx * baseline / depth; pick depth = 3m default
+            disparity_px = int(round(self._intrinsics.fx
+                                     * self._stereo_baseline_m / 3.0))
+            right_image = np.roll(image, -disparity_px, axis=1)
+            # Roll wraps around — zero out the wrapped strip on the right.
+            if disparity_px > 0:
+                right_image[:, -disparity_px:] = 0
+
         frame = CameraFrame(
             image=image,
             timestamp=ts,
             frame_idx=self._frame_idx,
             intrinsics=self._intrinsics,
             source_id="synthetic",
+            right_image=right_image,
         )
         self._frame_idx += 1
         return frame

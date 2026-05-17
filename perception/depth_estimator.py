@@ -45,6 +45,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional
 
+import cv2
 import numpy as np
 
 from perception.camera_interface import CameraFrame, CameraIntrinsics
@@ -350,3 +351,138 @@ class NullDepthEstimator(DepthEstimator):
     @property
     def mean_inference_ms(self) -> float:
         return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Stereo backend (classical SGBM)
+# ---------------------------------------------------------------------------
+
+class StereoSGBMDepthEstimator(DepthEstimator):
+    """
+    Classical stereo depth from cv2.StereoSGBM (Semi-Global Block Matching).
+
+    Why classical SGBM and not a neural stereo network
+    --------------------------------------------------
+    Neural stereo (IGEV, FoundationStereo, CREStereo) wins on
+    benchmarks but adds a 1-3 GB GPU model, a CUDA build dependency,
+    and bigger per-frame latency. SGBM is well-engineered, runs on
+    CPU at ~30 ms for 640×480, and is genuinely the right choice
+    for many production robots that don't have GPU headroom. A
+    neural backend can slot in later under the same DepthEstimator
+    ABC without touching downstream code.
+
+    Inputs
+    ------
+    frame.image       : left-eye BGR image
+    frame.right_image : right-eye BGR image (must be present)
+    frame.intrinsics.baseline_m : stereo baseline in metres (must be > 0)
+    frame.intrinsics.fx         : focal length in pixels
+
+    Output
+    ------
+    Per-detection depth derived from the disparity at the detection
+    centroid. depth = fx * baseline / disparity. Invalid pixels
+    (disparity ≤ 0) yield depth_m = 0.0 and position_3d = None.
+
+    Reference
+    ---------
+    Hirschmüller (2008) — Stereo Processing by Semi-Global Matching
+                          and Mutual Information. IEEE TPAMI 30(2).
+    """
+
+    def __init__(
+        self,
+        min_disparity:   int = 0,
+        num_disparities: int = 96,   # must be divisible by 16
+        block_size:      int = 7,    # odd, typical range 3-11
+        device:          str = "cpu",
+    ) -> None:
+        # device unused — SGBM is CPU-only. Kept on the signature for
+        # API symmetry with DepthAnythingEstimator.
+        self._sgbm = cv2.StereoSGBM_create(
+            minDisparity=min_disparity,
+            numDisparities=num_disparities,
+            blockSize=block_size,
+            P1=8  * 3 * block_size * block_size,
+            P2=32 * 3 * block_size * block_size,
+            disp12MaxDiff=1,
+            uniquenessRatio=10,
+            speckleWindowSize=100,
+            speckleRange=32,
+            mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        )
+        self._inference_times_ms: list[float] = []
+
+    def warmup(self) -> None:
+        # SGBM has no state — first call's cost is dominated by buffer
+        # allocation. Do a dummy compute so the first real call isn't
+        # an outlier in latency stats.
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        gl = cv2.cvtColor(dummy, cv2.COLOR_BGR2GRAY)
+        self._sgbm.compute(gl, gl)
+
+    def estimate(
+        self,
+        frame:      CameraFrame,
+        detections: List[Detection],
+    ) -> List[DepthEstimate]:
+        if frame.right_image is None:
+            log.warning(
+                "StereoSGBMDepthEstimator: frame.right_image is None "
+                "— stereo depth unavailable, returning zeros."
+            )
+            return [DepthEstimate(detection_idx=i, depth_m=0.0)
+                    for i in range(len(detections))]
+        if frame.intrinsics.baseline_m <= 0:
+            log.warning(
+                "StereoSGBMDepthEstimator: intrinsics.baseline_m = %.3f m "
+                "(must be > 0). Returning zeros.",
+                frame.intrinsics.baseline_m,
+            )
+            return [DepthEstimate(detection_idx=i, depth_m=0.0)
+                    for i in range(len(detections))]
+
+        t0 = time.monotonic()
+        gl = cv2.cvtColor(frame.image,       cv2.COLOR_BGR2GRAY)
+        gr = cv2.cvtColor(frame.right_image, cv2.COLOR_BGR2GRAY)
+        # SGBM output is int16, fixed-point with 4 fractional bits.
+        disparity = self._sgbm.compute(gl, gr).astype(np.float32) / 16.0
+        self._inference_times_ms.append(
+            (time.monotonic() - t0) * 1000.0
+        )
+
+        fx = frame.intrinsics.fx
+        baseline = frame.intrinsics.baseline_m
+        results: List[DepthEstimate] = []
+        H, W = disparity.shape
+        for i, det in enumerate(detections):
+            x1, y1, x2, y2 = det.bbox_xyxy
+            u = int(np.clip((x1 + x2) / 2.0, 0, W - 1))
+            v = int(np.clip((y1 + y2) / 2.0, 0, H - 1))
+            d_px = float(disparity[v, u])
+            if d_px <= 0.5:
+                # SGBM uses -1 for invalid; treat very small disparities
+                # as far/unknown to avoid divide-by-zero blow-ups.
+                results.append(DepthEstimate(
+                    detection_idx=i, depth_m=0.0, position_3d=None,
+                ))
+                continue
+            depth_m = fx * baseline / d_px
+            pos_3d = project_to_3d(float(u), float(v), depth_m,
+                                   frame.intrinsics)
+            results.append(DepthEstimate(
+                detection_idx=i, depth_m=depth_m, position_3d=pos_3d,
+            ))
+        return results
+
+    @property
+    def mean_inference_ms(self) -> float:
+        return float(np.mean(self._inference_times_ms[-30:]))  if \
+            self._inference_times_ms else 0.0
+
+    def __repr__(self) -> str:
+        return (
+            f"StereoSGBMDepthEstimator("
+            f"numDisp={self._sgbm.getNumDisparities()}, "
+            f"blockSize={self._sgbm.getBlockSize()})"
+        )

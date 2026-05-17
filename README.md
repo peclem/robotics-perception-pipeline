@@ -49,7 +49,11 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] Monocular depth          Depth Anything V2, metric         ║
     ║  [✓] Monocular ego-pose       DPVO (deep patch VO), 15 Hz       ║
     ║  [ ] ReID embeddings          OSNet, IoU + cosine cost          ║
-    ║  [ ] Stereo depth             StereoDepthEstimator ABC          ║
+    ║  [✓] Stereo depth             StereoSGBMDepthEstimator          ║
+    ║                               (cv2.StereoSGBM). Drop-in under   ║
+    ║                               the existing DepthEstimator ABC.  ║
+    ║                               Neural backend (IGEV / Foundation- ║
+    ║                               Stereo) pending.                   ║
     ║  [✓] IMU pre-integration      Forster (2017) ΔR/Δv/Δp +         ║
     ║                               covariance Jacobians. Bias-free   ║
     ║                               v1; VIO fuser pending.            ║
@@ -463,9 +467,10 @@ extension first — see "DPVO setup" above.
 
     python3 -m pytest tests/ -m "not integration" -v
 
-517 unit tests across detection, tracking, state estimation (including
-IMU pre-integration), world model, coordinate frames (TransformTree),
-DPVO wrapper, occupancy grid, stability classification, appearance
+535 unit tests across detection, tracking, state estimation (including
+bias-aware IMU pre-integration with numerical Jacobian verification),
+world model, coordinate frames (TransformTree), DPVO wrapper, mono +
+stereo depth, occupancy grid, stability classification, appearance
 extractor, WorldMap, health monitor, IMU interface, visualisation, and
 benchmarks. All tests use SyntheticCamera / synthetic IMU / synthetic
 data — no hardware required. Integration tests (real GPU, live DPVO /
@@ -648,10 +653,21 @@ of pre-integration assumes zero/pre-calibrated biases; adding
 first-order bias Jacobians (∂ΔR/∂b_g, ∂Δv/∂b_a, ∂Δp/∂b_a) is the
 next math step.
 
-**Stereo depth.** The DepthEstimator ABC accepts a StereoDepthEstimator
-as a drop-in replacement for DepthAnythingEstimator. Stereo triangulation
-produces metric depth without the scale ambiguity inherent to monocular
-estimation, with no additional inference cost at runtime.
+**Neural stereo backend.** `StereoSGBMDepthEstimator` (classical
+cv2.StereoSGBM) ships today and is genuinely the right pick for CPU-
+constrained or GPU-tight deployments. A neural stereo backend
+(IGEV-Stereo, FoundationStereo, CREStereo) slots into the same
+`DepthEstimator` ABC — better accuracy on textureless / low-feature
+scenes but adds a 1–3 GB GPU model and a CUDA build dependency.
+Deferred until a use case shows SGBM's accuracy is the bottleneck.
+
+**Bias-aware IMU pre-integration.** Already implemented — the
+PreintegratedMeasurement carries five 3×3 bias Jacobians and
+`correct_for_bias()` applies first-order corrections in O(1).
+What's still missing is the *fuser* that consumes these
+measurements: an error-state EKF or factor graph that estimates
+biases online and feeds the corrected pre-integration back into
+DPVO's pose updates.
 
 ---
 
