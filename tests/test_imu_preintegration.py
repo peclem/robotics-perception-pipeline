@@ -210,6 +210,152 @@ class TestQuaternionAccessor:
         np.testing.assert_allclose(np.linalg.norm(q), 1.0, atol=1e-8)
 
 
+class TestBiasAware:
+    """
+    Bias correction at integration time + first-order Jacobian-based
+    re-correction. Tests both pieces against re-integration as ground truth.
+    """
+
+    def test_bias_subtraction_at_integration(self):
+        """
+        If we feed a 'measured' gyro that includes a known bias and
+        provide that bias to integrate(), the result should match
+        integrating the bias-free signal directly.
+        """
+        rate_hz = 200.0
+        true_omega = np.array([0.0, 0.0, 0.5])
+        b_g        = np.array([0.01, -0.02, 0.005])
+        measured   = true_omega + b_g
+
+        pre = IMUPreintegrator()
+        m_truth = pre.integrate(_samples([0, 0, 0], true_omega, n=101, rate_hz=rate_hz))
+        m_corr  = pre.integrate(_samples([0, 0, 0], measured,  n=101, rate_hz=rate_hz),
+                                b_g=b_g)
+        np.testing.assert_allclose(m_corr.delta_R, m_truth.delta_R, atol=1e-10)
+        np.testing.assert_allclose(m_corr.delta_v, m_truth.delta_v, atol=1e-10)
+
+    def test_bias_recorded_on_measurement(self):
+        pre = IMUPreintegrator()
+        b_g = np.array([0.01, 0.02, 0.03])
+        b_a = np.array([0.05, 0.0, -0.1])
+        m = pre.integrate(_samples([0, 0, 0], [0, 0, 0], n=10),
+                          b_g=b_g, b_a=b_a)
+        np.testing.assert_allclose(m.b_g_used, b_g)
+        np.testing.assert_allclose(m.b_a_used, b_a)
+
+    def test_correct_for_bias_matches_reintegration(self):
+        """
+        End-to-end: integrate with b1, then correct to b2 → should
+        closely match a fresh integration with b2 (within first-order
+        linearisation error, which is small for small Δb).
+        """
+        rate_hz = 200.0
+        n = 41   # 0.2 s window — a typical inter-keyframe interval
+        # Use a constant-acceleration + constant-rotation signal so
+        # there's something for biases to affect.
+        accel = np.array([1.0, 0.5, 0.0])
+        gyro  = np.array([0.0, 0.0, 0.3])
+
+        pre = IMUPreintegrator()
+        b1_g = np.zeros(3)
+        b1_a = np.zeros(3)
+        m1 = pre.integrate(_samples(accel, gyro, n=n, rate_hz=rate_hz),
+                           b_g=b1_g, b_a=b1_a)
+
+        # Small bias update — the linearisation should handle it well.
+        delta = 5e-3
+        b2_g = b1_g + np.array([delta, -delta, delta])
+        b2_a = b1_a + np.array([-delta, delta, 0.0])
+
+        m_corr  = m1.correct_for_bias(b2_g, b2_a)
+        m_truth = pre.integrate(_samples(accel, gyro, n=n, rate_hz=rate_hz),
+                                b_g=b2_g, b_a=b2_a)
+
+        # Compare ΔR via geodesic distance (rotation matrix log of difference)
+        R_err = m_corr.delta_R.T @ m_truth.delta_R
+        angle_err = float(np.linalg.norm(R.from_matrix(R_err).as_rotvec()))
+        assert angle_err < 1e-4, \
+            f"rotation linearisation error {angle_err:.3e} too large"
+        np.testing.assert_allclose(m_corr.delta_v, m_truth.delta_v, atol=1e-4)
+        np.testing.assert_allclose(m_corr.delta_p, m_truth.delta_p, atol=1e-4)
+
+    def test_jacobian_numerical_v(self):
+        """
+        Numerical Jacobian sanity check on J_v_g and J_v_a. Perturb
+        each axis of the bias by ε and compare the linear prediction
+        to the actual re-integration.
+        """
+        rate_hz = 200.0
+        n = 30
+        accel = np.array([1.0, 0.0, 0.5])
+        gyro  = np.array([0.0, 0.3, 0.0])
+        b0_g = np.zeros(3)
+        b0_a = np.zeros(3)
+        eps = 1e-5
+
+        pre = IMUPreintegrator()
+        base_samples = _samples(accel, gyro, n=n, rate_hz=rate_hz)
+        m0 = pre.integrate(base_samples, b_g=b0_g, b_a=b0_a)
+
+        # Check J_v_g column by column (∂Δv/∂b_g_i).
+        for axis in range(3):
+            db = np.zeros(3)
+            db[axis] = eps
+            m_eps = pre.integrate(base_samples, b_g=b0_g + db, b_a=b0_a)
+            numerical = (m_eps.delta_v - m0.delta_v) / eps
+            analytical = m0.J_v_g[:, axis]
+            np.testing.assert_allclose(
+                numerical, analytical, atol=1e-3, rtol=1e-3,
+                err_msg=f"J_v_g axis {axis} mismatch",
+            )
+
+        # Check J_v_a column by column.
+        for axis in range(3):
+            db = np.zeros(3)
+            db[axis] = eps
+            m_eps = pre.integrate(base_samples, b_g=b0_g, b_a=b0_a + db)
+            numerical = (m_eps.delta_v - m0.delta_v) / eps
+            analytical = m0.J_v_a[:, axis]
+            np.testing.assert_allclose(
+                numerical, analytical, atol=1e-3, rtol=1e-3,
+                err_msg=f"J_v_a axis {axis} mismatch",
+            )
+
+    def test_jacobian_J_R_g_numerical(self):
+        """Numerical ∂ΔR/∂b_g via geodesic distance."""
+        rate_hz = 200.0
+        n = 30
+        gyro  = np.array([0.0, 0.2, 0.0])
+        b0_g = np.zeros(3)
+        eps = 1e-5
+
+        pre = IMUPreintegrator()
+        base_samples = _samples([0, 0, 0], gyro, n=n, rate_hz=rate_hz)
+        m0 = pre.integrate(base_samples, b_g=b0_g)
+        for axis in range(3):
+            db = np.zeros(3)
+            db[axis] = eps
+            m_eps = pre.integrate(base_samples, b_g=b0_g + db)
+            # Numerical column: log( ΔR_0^T · ΔR_eps ) / eps  in axis-angle
+            R_diff = m0.delta_R.T @ m_eps.delta_R
+            numerical = R.from_matrix(R_diff).as_rotvec() / eps
+            analytical = m0.J_R_g[:, axis]
+            np.testing.assert_allclose(
+                numerical, analytical, atol=1e-3, rtol=1e-3,
+                err_msg=f"J_R_g axis {axis} mismatch",
+            )
+
+    def test_jacobian_R_to_accel_bias_is_zero(self):
+        """Accel bias does not affect rotation (no J_R_a stored)."""
+        # Confirmed by construction — there is no J_R_a field. This
+        # test just documents the design intent so it's caught if a
+        # future refactor breaks the invariant.
+        pre = IMUPreintegrator()
+        m = pre.integrate(_samples([1, 0, 0], [0, 0, 0], n=20))
+        assert not hasattr(m, "J_R_a"), \
+            "PreintegratedMeasurement must not carry a J_R_a"
+
+
 class TestSyntheticIntegration:
     """End-to-end: SyntheticIMU → IMUPreintegrator agreement with presets."""
 

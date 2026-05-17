@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -75,6 +75,22 @@ class PreintegratedMeasurement:
     (without gravity — gravity is applied by the downstream fuser
     once the absolute orientation R_w_i is known).
 
+    Bias linearisation
+    ------------------
+    The measurement was integrated assuming biases (b_g_used, b_a_used).
+    When a downstream estimator later updates the bias estimate (which
+    factor-graph VIO and error-state EKFs do constantly), `correct_for_bias`
+    applies a first-order correction without re-integrating the raw
+    samples — Forster eq. 44/45. The five Jacobians:
+
+        J_R_g  ∂ΔR/∂b_g    (3,3)   rotation w.r.t. gyro bias
+        J_v_g  ∂Δv/∂b_g    (3,3)   velocity w.r.t. gyro bias
+        J_v_a  ∂Δv/∂b_a    (3,3)   velocity w.r.t. accel bias
+        J_p_g  ∂Δp/∂b_g    (3,3)
+        J_p_a  ∂Δp/∂b_a    (3,3)
+
+    ∂ΔR/∂b_a is identically zero (accel bias does not affect rotation).
+
     Attributes
     ----------
     delta_R     : (3, 3) rotation matrix, body-i ← body-j.
@@ -85,6 +101,8 @@ class PreintegratedMeasurement:
                   error state (rotation perturbation in axis-angle
                   form, then velocity, then position).
     n_samples   : number of IMU samples integrated.
+    b_g_used / b_a_used : biases the integration assumed (3,).
+    J_R_g, J_v_g, J_v_a, J_p_g, J_p_a : bias Jacobians (each 3×3).
     """
     delta_R:    np.ndarray
     delta_v:    np.ndarray
@@ -92,16 +110,31 @@ class PreintegratedMeasurement:
     dt:         float
     covariance: np.ndarray
     n_samples:  int
+    b_g_used:   np.ndarray = field(default_factory=lambda: np.zeros(3))
+    b_a_used:   np.ndarray = field(default_factory=lambda: np.zeros(3))
+    J_R_g:      np.ndarray = field(default_factory=lambda: np.zeros((3, 3)))
+    J_v_g:      np.ndarray = field(default_factory=lambda: np.zeros((3, 3)))
+    J_v_a:      np.ndarray = field(default_factory=lambda: np.zeros((3, 3)))
+    J_p_g:      np.ndarray = field(default_factory=lambda: np.zeros((3, 3)))
+    J_p_a:      np.ndarray = field(default_factory=lambda: np.zeros((3, 3)))
 
     def __post_init__(self) -> None:
         self.delta_R    = np.asarray(self.delta_R,    dtype=np.float64)
         self.delta_v    = np.asarray(self.delta_v,    dtype=np.float64)
         self.delta_p    = np.asarray(self.delta_p,    dtype=np.float64)
         self.covariance = np.asarray(self.covariance, dtype=np.float64)
+        self.b_g_used   = np.asarray(self.b_g_used,   dtype=np.float64)
+        self.b_a_used   = np.asarray(self.b_a_used,   dtype=np.float64)
+        for name in ("J_R_g", "J_v_g", "J_v_a", "J_p_g", "J_p_a"):
+            arr = np.asarray(getattr(self, name), dtype=np.float64)
+            setattr(self, name, arr)
+            assert arr.shape == (3, 3), f"{name} must be (3,3), got {arr.shape}"
         assert self.delta_R.shape    == (3, 3)
         assert self.delta_v.shape    == (3,)
         assert self.delta_p.shape    == (3,)
         assert self.covariance.shape == (9, 9)
+        assert self.b_g_used.shape   == (3,)
+        assert self.b_a_used.shape   == (3,)
 
     @classmethod
     def identity(cls) -> "PreintegratedMeasurement":
@@ -114,6 +147,45 @@ class PreintegratedMeasurement:
             n_samples=0,
         )
 
+    def correct_for_bias(
+        self,
+        b_g_new: np.ndarray,
+        b_a_new: np.ndarray,
+    ) -> "PreintegratedMeasurement":
+        """
+        First-order bias correction (Forster 2017, eq. 44–45).
+
+        When the downstream estimator updates its bias estimate from
+        (b_g_used, b_a_used) to (b_g_new, b_a_new), this returns a
+        new PreintegratedMeasurement with ΔR/Δv/Δp corrected via the
+        linearised model, without re-integrating raw IMU samples.
+
+        Accurate while |Δb| is small (a few σ of bias drift between
+        camera frames is well within range). For very large bias
+        jumps, re-integrating from raw samples is cheaper than
+        accumulating linearisation error.
+        """
+        b_g_new = np.asarray(b_g_new, dtype=np.float64)
+        b_a_new = np.asarray(b_a_new, dtype=np.float64)
+        db_g = b_g_new - self.b_g_used
+        db_a = b_a_new - self.b_a_used
+
+        # ΔR_new = ΔR_old · Exp(J_R_g · δb_g)
+        dR_corr = self.delta_R @ _so3_exp(self.J_R_g @ db_g)
+        dv_corr = self.delta_v + self.J_v_g @ db_g + self.J_v_a @ db_a
+        dp_corr = self.delta_p + self.J_p_g @ db_g + self.J_p_a @ db_a
+
+        return PreintegratedMeasurement(
+            delta_R=dR_corr, delta_v=dv_corr, delta_p=dp_corr,
+            dt=self.dt, covariance=self.covariance,
+            n_samples=self.n_samples,
+            b_g_used=b_g_new, b_a_used=b_a_new,
+            # Jacobians are computed at the linearisation point — keep
+            # them unchanged for chained re-corrections within range.
+            J_R_g=self.J_R_g, J_v_g=self.J_v_g, J_v_a=self.J_v_a,
+            J_p_g=self.J_p_g, J_p_a=self.J_p_a,
+        )
+
     @property
     def delta_rotation_quat_xyzw(self) -> np.ndarray:
         """Convenience: ΔR as quaternion (xyzw) for ROS interop."""
@@ -124,7 +196,9 @@ class PreintegratedMeasurement:
             f"PreintegratedMeasurement(dt={self.dt:.3f}s, "
             f"n={self.n_samples}, "
             f"|Δv|={np.linalg.norm(self.delta_v):.3f} m/s, "
-            f"|Δp|={np.linalg.norm(self.delta_p):.3f} m)"
+            f"|Δp|={np.linalg.norm(self.delta_p):.3f} m, "
+            f"|b_g_used|={np.linalg.norm(self.b_g_used):.3e}, "
+            f"|b_a_used|={np.linalg.norm(self.b_a_used):.3e})"
         )
 
 
@@ -201,6 +275,8 @@ class IMUPreintegrator:
     def integrate(
         self,
         samples: Sequence[IMUSample],
+        b_g:     Optional[np.ndarray] = None,
+        b_a:     Optional[np.ndarray] = None,
     ) -> PreintegratedMeasurement:
         """
         Pre-integrate a contiguous batch of IMU samples.
@@ -212,14 +288,34 @@ class IMUPreintegrator:
         "next" to define dt with).
 
         Empty input returns the identity measurement.
+
+        Parameters
+        ----------
+        b_g, b_a : optional bias estimates (3,) used to correct raw
+                   readings before integration: ω_used = ω_measured − b_g,
+                   a_used = a_measured − b_a. Default zero (treat as
+                   pre-calibrated). The bias Jacobians on the returned
+                   measurement enable first-order correction later via
+                   correct_for_bias() — see PreintegratedMeasurement.
         """
         if len(samples) < 2:
             return PreintegratedMeasurement.identity()
+
+        b_g_used = (np.asarray(b_g, dtype=np.float64)
+                    if b_g is not None else np.zeros(3))
+        b_a_used = (np.asarray(b_a, dtype=np.float64)
+                    if b_a is not None else np.zeros(3))
 
         dR = np.eye(3)
         dv = np.zeros(3)
         dp = np.zeros(3)
         cov = np.zeros((9, 9))
+        # Bias Jacobians — propagated alongside the mean state.
+        J_R_g = np.zeros((3, 3))
+        J_v_g = np.zeros((3, 3))
+        J_v_a = np.zeros((3, 3))
+        J_p_g = np.zeros((3, 3))
+        J_p_a = np.zeros((3, 3))
         t0 = samples[0].timestamp
 
         # Iterate over consecutive pairs so we have a well-defined dt.
@@ -228,8 +324,8 @@ class IMUPreintegrator:
             if dt <= 0:
                 # Out-of-order or duplicate timestamp — skip.
                 continue
-            omega = samples[i].gyro
-            acc   = samples[i].accel
+            omega = samples[i].gyro - b_g_used
+            acc   = samples[i].accel - b_a_used
 
             # --- mean propagation -----------------------------------
             # ΔR_new = ΔR_old · Exp(ω · dt)
@@ -275,15 +371,33 @@ class IMUPreintegrator:
 
             cov = A @ cov @ A.T + B @ sigma @ B.T
 
+            # --- bias Jacobians (Forster eq. 60–63) -----------------
+            # Order matters: use the OLD ΔR, J_R_g etc. on the right
+            # side before updating in place.
+            acc_skew = _skew(acc)
+            J_R_g_new = dR_step.T @ J_R_g - _right_jacobian_so3(omega * dt) * dt
+            J_v_g_new = J_v_g - dR @ acc_skew @ J_R_g * dt
+            J_v_a_new = J_v_a - dR * dt
+            J_p_g_new = J_p_g + J_v_g * dt - 0.5 * dR @ acc_skew @ J_R_g * dt * dt
+            J_p_a_new = J_p_a + J_v_a * dt - 0.5 * dR * dt * dt
+
             dR = dR_new
             dv = dv_new
             dp = dp_new
+            J_R_g = J_R_g_new
+            J_v_g = J_v_g_new
+            J_v_a = J_v_a_new
+            J_p_g = J_p_g_new
+            J_p_a = J_p_a_new
 
         total_dt = float(samples[-1].timestamp - t0)
         return PreintegratedMeasurement(
             delta_R=dR, delta_v=dv, delta_p=dp,
             dt=total_dt, covariance=cov,
             n_samples=len(samples),
+            b_g_used=b_g_used, b_a_used=b_a_used,
+            J_R_g=J_R_g, J_v_g=J_v_g, J_v_a=J_v_a,
+            J_p_g=J_p_g, J_p_a=J_p_a,
         )
 
     def __repr__(self) -> str:
