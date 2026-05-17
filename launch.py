@@ -38,6 +38,7 @@ from perception.depth_estimator import DepthAnythingEstimator, NullDepthEstimato
 from perception.appearance_extractor import (
     AppearanceExtractor, NullAppearanceExtractor,
 )
+from perception.health_monitor import HealthMonitor, HealthStatus
 from world_model.world_map import WorldMap
 from perception.pose_estimator import NullPoseEstimator, CameraPose
 from perception.transform_tree import TransformTree
@@ -157,6 +158,12 @@ class Pipeline:
         self._appearance_extractor = self._build_appearance_extractor()
         self._world_map = self._build_world_map()
 
+        # Health monitor: per-stage latency budgets + degraded-mode
+        # signalling. Always built (cheap); reporting is enabled when
+        # health_monitor.enabled is true in config.
+        self._health = self._build_health_monitor()
+        self._next_health_log_s = 0.0
+
         self._tracker    = ByteTracker(raw)
         self._scene_graph = SceneGraph(
             raw,
@@ -166,6 +173,25 @@ class Pipeline:
         self._visualizer = DebugVisualizer(cfg)
         self._visualizer.connect_rerun()
         self._writer     = None
+
+    def _build_health_monitor(self) -> HealthMonitor:
+        """Construct a HealthMonitor with stages from config."""
+        hm_cfg = self._cfg.health_monitor
+        m = HealthMonitor()
+        for name, budget in hm_cfg.stage_budgets_ms.items():
+            m.register(
+                name, budget_ms=float(budget),
+                window=hm_cfg.window,
+                warn_after=hm_cfg.warn_after,
+                error_after=hm_cfg.error_after,
+                stale_after_s=hm_cfg.stale_after_s,
+            )
+        if hm_cfg.enabled:
+            log.info(
+                "HealthMonitor enabled (%d stages, log every %.1fs)",
+                len(hm_cfg.stage_budgets_ms), hm_cfg.log_period_s,
+            )
+        return m
 
     def _build_appearance_extractor(self) -> AppearanceExtractor:
         """Factory for AppearanceExtractor keyed on appearance.type."""
@@ -305,17 +331,21 @@ class Pipeline:
             if frame_idx == 0 and self._writer is None:
                 self._writer = self._open_writer(frame)
 
-            t0          = time.monotonic()
-            detections  = self._detector.detect(frame)
-            t_detect    = time.monotonic() - t0
+            with self._health.stage("detector"):
+                t0          = time.monotonic()
+                detections  = self._detector.detect(frame)
+                t_detect    = time.monotonic() - t0
+
             # Depth estimation
-            depth_estimates_list = self._depth_estimator.estimate(frame, detections)
+            with self._health.stage("depth"):
+                depth_estimates_list = self._depth_estimator.estimate(frame, detections)
 
             # Build track_id → depth estimate mapping after tracker update
             # (tracker assigns IDs, then we match detections to tracks by position)
-            t0               = time.monotonic()
-            confirmed_tracks = self._tracker.update(detections, frame)
-            t_track          = time.monotonic() - t0
+            with self._health.stage("tracker"):
+                t0               = time.monotonic()
+                confirmed_tracks = self._tracker.update(detections, frame)
+                t_track          = time.monotonic() - t0
 
             depth_map = {}
             for track in confirmed_tracks:
@@ -335,31 +365,34 @@ class Pipeline:
                     if best_idx is not None and best_dist < 50:
                         depth_map[track.track_id] = depth_estimates_list[best_idx]
 
-            camera_pose = self._pose_estimator.estimate(frame)
-            if self._transform_tree is not None and camera_pose is not None:
-                self._transform_tree.update_from_camera_pose(
-                    camera_pose,
-                    camera_frame=self._cfg.coordinate_frames.camera_frame,
-                )
+            with self._health.stage("pose"):
+                camera_pose = self._pose_estimator.estimate(frame)
+                if self._transform_tree is not None and camera_pose is not None:
+                    self._transform_tree.update_from_camera_pose(
+                        camera_pose,
+                        camera_frame=self._cfg.coordinate_frames.camera_frame,
+                    )
 
             # Per-track appearance embeddings for WorldMap re-association.
             # Only computed when an extractor is configured AND the
             # world map is enabled — otherwise it's wasted GPU time.
             appearance_map = {}
             if self._world_map is not None and confirmed_tracks:
-                bboxes = [tr.bbox_xyxy for tr in confirmed_tracks]
-                embs = self._appearance_extractor.extract(frame.image, bboxes)
-                for tr, emb in zip(confirmed_tracks, embs):
-                    appearance_map[tr.track_id] = emb
+                with self._health.stage("appearance"):
+                    bboxes = [tr.bbox_xyxy for tr in confirmed_tracks]
+                    embs = self._appearance_extractor.extract(frame.image, bboxes)
+                    for tr, emb in zip(confirmed_tracks, embs):
+                        appearance_map[tr.track_id] = emb
 
-            self._scene_graph.update(
-                confirmed_tracks=confirmed_tracks,
-                lost_tracks=self._tracker.lost_tracks,
-                timestamp=frame.timestamp,
-                depth_estimates=depth_map,
-                appearance_embeddings=appearance_map,
-                camera_pose=camera_pose,
-            )
+            with self._health.stage("scene_graph"):
+                self._scene_graph.update(
+                    confirmed_tracks=confirmed_tracks,
+                    lost_tracks=self._tracker.lost_tracks,
+                    timestamp=frame.timestamp,
+                    depth_estimates=depth_map,
+                    appearance_embeddings=appearance_map,
+                    camera_pose=camera_pose,
+                )
 
             annotated = self._visualizer.draw(
                 frame=frame,
@@ -388,6 +421,21 @@ class Pipeline:
 
             t_total = time.monotonic() - t_frame_start
             self._frame_times.append(t_total)
+            self._health.get("frame_total").observe(t_total * 1000.0)
+
+            # Periodic health summary — and a WARN log line whenever
+            # any stage has escalated to ERROR.
+            hm_cfg = self._cfg.health_monitor
+            if hm_cfg.enabled and time.monotonic() >= self._next_health_log_s:
+                overall = self._health.overall_status()
+                if overall == HealthStatus.OK:
+                    log.debug("Health OK: %s", self._health.summary_line())
+                else:
+                    log.warning(
+                        "Health %s: %s",
+                        overall.name, self._health.summary_line(),
+                    )
+                self._next_health_log_s = time.monotonic() + hm_cfg.log_period_s
 
             if frame_idx % 30 == 0:
                 fps_log = (

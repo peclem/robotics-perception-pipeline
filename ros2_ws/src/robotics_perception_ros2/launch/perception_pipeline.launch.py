@@ -87,6 +87,13 @@ def generate_launch_description():
             output="screen",
             parameters=common_params,
         ),
+        Node(
+            package="robotics_perception_ros2",
+            executable="health_monitor_node",
+            name="health_monitor",
+            output="screen",
+            parameters=common_params,
+        ),
     ]
 
     return LaunchDescription([source_arg, video_arg, config_arg, *nodes])

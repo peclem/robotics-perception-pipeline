@@ -337,6 +337,36 @@ class CoordinateFramesConfig:
 
 
 @dataclass
+class HealthMonitorConfig:
+    """
+    Per-stage latency budgets + breach thresholds. Each entry in
+    stage_budgets_ms maps a stage name to its budget in milliseconds.
+    Stages registered at runtime that aren't in this table fall back
+    to `default_budget_ms`.
+    """
+    enabled:           bool                = True
+    warn_after:        int                 = 3
+    error_after:       int                 = 30
+    stale_after_s:     float               = 5.0
+    window:            int                 = 60
+    default_budget_ms: float               = 50.0
+    log_period_s:      float               = 5.0
+    stage_budgets_ms:  Dict[str, float]    = field(default_factory=lambda: {
+        # Defaults tuned for a 30 Hz pipeline (33.3 ms total budget).
+        "detector":   12.0,
+        "depth":      20.0,
+        "pose":       25.0,
+        "tracker":    3.0,
+        "scene_graph": 5.0,
+        "appearance": 15.0,
+        "frame_total": 40.0,
+    })
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class AppearanceConfig:
     """
     Selects the AppearanceExtractor backend used for ReID embeddings.
@@ -450,6 +480,7 @@ class PipelineConfig:
     occupancy_grid:         OccupancyGridConfig        = field(default_factory=OccupancyGridConfig)
     appearance:             AppearanceConfig           = field(default_factory=AppearanceConfig)
     world_map:              WorldMapConfig             = field(default_factory=WorldMapConfig)
+    health_monitor:         HealthMonitorConfig        = field(default_factory=HealthMonitorConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -476,6 +507,7 @@ class PipelineConfig:
             "occupancy_grid":         self.occupancy_grid.as_dict(),
             "appearance":             self.appearance.as_dict(),
             "world_map":              self.world_map.as_dict(),
+            "health_monitor":         self.health_monitor.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -806,6 +838,7 @@ def _build(raw: dict) -> PipelineConfig:
     og = raw.get("occupancy_grid", {})
     ap = raw.get("appearance", {})
     wmap = raw.get("world_map", {})
+    hm = raw.get("health_monitor", {})
 
     static_ext_raw = cf.get("static_extrinsics", []) or []
     static_extrinsics = [
@@ -972,5 +1005,18 @@ def _build(raw: dict) -> PipelineConfig:
             spatial_gate_m=       float(wmap.get("spatial_gate_m", 1.5)),
             similarity_threshold= float(wmap.get("similarity_threshold", 0.75)),
             allow_spatial_only=   bool(wmap.get("allow_spatial_only", True)),
+        ),
+        health_monitor=HealthMonitorConfig(
+            enabled=           bool(hm.get("enabled", True)),
+            warn_after=        int(hm.get("warn_after", 3)),
+            error_after=       int(hm.get("error_after", 30)),
+            stale_after_s=     float(hm.get("stale_after_s", 5.0)),
+            window=            int(hm.get("window", 60)),
+            default_budget_ms= float(hm.get("default_budget_ms", 50.0)),
+            log_period_s=      float(hm.get("log_period_s", 5.0)),
+            stage_budgets_ms={
+                str(k): float(v) for k, v in
+                (hm.get("stage_budgets_ms") or {}).items()
+            } or HealthMonitorConfig().stage_budgets_ms,
         ),
     )

@@ -132,6 +132,22 @@ world_map:
   spatial_gate_m: 1.5       # re-association candidates within this distance
   similarity_threshold: 0.75   # cosine threshold ∈ [-1, 1]
   allow_spatial_only: true  # fall back to spatial-only when embeddings missing
+health_monitor:
+  enabled: true             # per-stage latency budgets + diagnostics
+  warn_after:  3            # consecutive budget breaches → WARN
+  error_after: 30           # consecutive budget breaches → ERROR
+  stale_after_s: 5.0        # silence longer than this → STALE
+  window: 60                # rolling samples retained per stage
+  default_budget_ms: 50.0   # fallback budget for unlisted stages
+  log_period_s: 5.0         # log a one-line summary this often
+  stage_budgets_ms:         # per-stage latency budgets (ms)
+    detector:    12.0
+    depth:       20.0
+    pose:        25.0
+    tracker:     3.0
+    scene_graph: 5.0
+    appearance:  15.0
+    frame_total: 40.0
 occupancy_grid:
   enabled: false            # publish nav_msgs/OccupancyGrid from the scene graph
   resolution_m: 0.05        # 5 cm per cell (Nav2 default)

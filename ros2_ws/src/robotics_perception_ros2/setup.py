@@ -42,6 +42,8 @@ setup(
             f"{package_name}.scene_graph_node:main",
             "occupancy_grid_node = "
             f"{package_name}.occupancy_grid_node:main",
+            "health_monitor_node = "
+            f"{package_name}.health_monitor_node:main",
         ],
     },
 )

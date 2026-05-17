@@ -100,6 +100,9 @@ marked. Unimplemented components and their integration points are identified.
     ║                               on revisit. ObjectState carries   ║
     ║                               a stable persistent_id across     ║
     ║                               ByteTracker ID resets.            ║
+    ║  [✓] Health monitor           per-stage LatencyTracker + topic  ║
+    ║                               inter-arrival, OK/WARN/ERROR/     ║
+    ║                               STALE on /diagnostics             ║
     ║  [ ] Static obstacle layer    pre-mapped walls; needs SLAM      ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
@@ -371,6 +374,11 @@ behind both — the ROS2 layer is an adapter, not a port.
                                                     20×20 m @ 5 cm/cell,
                                                     2σ-inflated dynamic layer)
 
+    all /perception/* topics ──▶ health_monitor_node ──▶ /diagnostics
+                                  (diagnostic_msgs/DiagnosticArray @ 1 Hz,
+                                   per-stage OK/WARN/ERROR/STALE based on
+                                   topic inter-arrival vs per-stage budgets)
+
 ### Setup
 
     # 1. Install ROS2 Humble (see https://docs.ros.org/en/humble/Installation.html)
@@ -433,13 +441,13 @@ extension first — see "DPVO setup" above.
 
     python3 -m pytest tests/ -m "not integration" -v
 
-473 unit tests across detection, tracking, state estimation, world
+487 unit tests across detection, tracking, state estimation, world
 model, coordinate frames (TransformTree), DPVO wrapper, occupancy
 grid, stability classification, appearance extractor, WorldMap,
-visualisation, and benchmarks. All tests use SyntheticCamera or
-synthetic data — no hardware required. Integration tests (real GPU,
-live DPVO / DINOv2 models) are marked and excluded from CI; run with
-`pytest -m integration`.
+health monitor, visualisation, and benchmarks. All tests use
+SyntheticCamera or synthetic data — no hardware required. Integration
+tests (real GPU, live DPVO / DINOv2 models) are marked and excluded
+from CI; run with `pytest -m integration`.
 
 ---
 
@@ -503,6 +511,20 @@ All parameters are externalised in config/default.yaml.
         spatial_gate_m: 1.5     # re-association candidates within this distance
         similarity_threshold: 0.75   # cosine similarity threshold
         allow_spatial_only: true     # fall back when embeddings missing
+
+    health_monitor:             # per-stage latency budgets + diagnostics
+        enabled: true
+        warn_after:  3              # consecutive budget breaches → WARN
+        error_after: 30             # consecutive budget breaches → ERROR
+        log_period_s: 5.0
+        stage_budgets_ms:
+            detector:    12.0
+            depth:       20.0
+            pose:        25.0
+            tracker:     3.0
+            scene_graph: 5.0
+            appearance:  15.0
+            frame_total: 40.0
 
 Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
