@@ -67,6 +67,10 @@ class ObjectState:
     position_3d: Optional[np.ndarray] = None   # (3,) [X, Y, Z] in metres, camera frame; None if unavailable
     position_world: Optional[np.ndarray] = None  # (3,) [X, Y, Z] in metres, world (map) frame; None if no ego-pose
     stability:  StabilityClass      = StabilityClass.SEMI_STATIC
+    # WorldMap-assigned persistent ID. None when the object hasn't been
+    # promoted into the long-term map yet (e.g. DYNAMIC, or no
+    # position_world available). Stable across re-associations on revisit.
+    persistent_id: Optional[int]    = None
     # Frame counters used by SceneGraph's motion-based stability override.
     # Reset whenever the relevant condition lapses.
     _moving_frames:     int         = 0

@@ -337,6 +337,43 @@ class CoordinateFramesConfig:
 
 
 @dataclass
+class AppearanceConfig:
+    """
+    Selects the AppearanceExtractor backend used for ReID embeddings.
+
+    type
+        'null'   — NullAppearanceExtractor (re-association disabled
+                   or spatial-only)
+        'dinov2' — Meta DINOv2 foundation features. Generalises across
+                   the 80 COCO classes — unlike person-specific ReID.
+    model
+        HuggingFace model id. facebook/dinov2-small fits comfortably
+        on a 12 GB GPU alongside the rest of the stack.
+    """
+    type:   str = "null"
+    model:  str = "facebook/dinov2-small"
+    device: str = "cuda"
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class WorldMapConfig:
+    """
+    Long-term spatial memory of STATIC + SEMI_STATIC objects with
+    appearance-based re-association on revisit.
+    """
+    enabled:              bool   = False
+    spatial_gate_m:       float  = 1.5
+    similarity_threshold: float  = 0.75
+    allow_spatial_only:   bool   = True
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class OccupancyGridConfig:
     """
     Dynamic obstacle grid parameters. See world_model.OccupancyGridParams
@@ -411,6 +448,8 @@ class PipelineConfig:
     coordinate_frames:      CoordinateFramesConfig     = field(default_factory=CoordinateFramesConfig)
     pose_estimator:         PoseEstimatorConfig        = field(default_factory=PoseEstimatorConfig)
     occupancy_grid:         OccupancyGridConfig        = field(default_factory=OccupancyGridConfig)
+    appearance:             AppearanceConfig           = field(default_factory=AppearanceConfig)
+    world_map:              WorldMapConfig             = field(default_factory=WorldMapConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -435,6 +474,8 @@ class PipelineConfig:
             "coordinate_frames":      self.coordinate_frames.as_dict(),
             "pose_estimator":         self.pose_estimator.as_dict(),
             "occupancy_grid":         self.occupancy_grid.as_dict(),
+            "appearance":             self.appearance.as_dict(),
+            "world_map":              self.world_map.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -694,6 +735,25 @@ def _validate(raw: dict) -> None:
             f"pose_estimator.type={pe_type!r} is invalid. "
             "Supported: 'null', 'dpvo' (implemented), 'orbslam' (planned)."
         )
+
+    # Appearance extractor
+    ap_raw = raw.get("appearance", {})
+    ap_type = ap_raw.get("type", "null")
+    if ap_type not in ("null", "dinov2"):
+        errors.append(
+            f"appearance.type={ap_type!r} is invalid. "
+            "Supported: 'null', 'dinov2'."
+        )
+
+    # World map
+    wmap_raw = raw.get("world_map", {})
+    _require_positive_float(errors, wmap_raw, "world_map.spatial_gate_m")
+    sim_thr = wmap_raw.get("similarity_threshold")
+    if sim_thr is not None and not (-1.0 <= float(sim_thr) <= 1.0):
+        errors.append(
+            f"world_map.similarity_threshold={sim_thr} must lie in [-1, 1] "
+            "(cosine similarity range)."
+        )
     _require_positive_int(errors, pe_raw, "pose_estimator.stride")
     _require_positive_int(errors, pe_raw, "pose_estimator.patches_per_frame")
 
@@ -744,6 +804,8 @@ def _build(raw: dict) -> PipelineConfig:
     cf = raw.get("coordinate_frames", {})
     pe = raw.get("pose_estimator", {})
     og = raw.get("occupancy_grid", {})
+    ap = raw.get("appearance", {})
+    wmap = raw.get("world_map", {})
 
     static_ext_raw = cf.get("static_extrinsics", []) or []
     static_extrinsics = [
@@ -899,5 +961,16 @@ def _build(raw: dict) -> PipelineConfig:
                 str(k): float(v) for k, v in
                 (og.get("per_class_inflation_m") or {}).items()
             } or OccupancyGridConfig().per_class_inflation_m,
+        ),
+        appearance=AppearanceConfig(
+            type=   str(ap.get("type", "null")),
+            model=  str(ap.get("model", "facebook/dinov2-small")),
+            device= str(ap.get("device", "cuda")),
+        ),
+        world_map=WorldMapConfig(
+            enabled=              bool(wmap.get("enabled", False)),
+            spatial_gate_m=       float(wmap.get("spatial_gate_m", 1.5)),
+            similarity_threshold= float(wmap.get("similarity_threshold", 0.75)),
+            allow_spatial_only=   bool(wmap.get("allow_spatial_only", True)),
         ),
     )

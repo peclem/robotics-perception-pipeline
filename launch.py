@@ -35,6 +35,10 @@ from tracking.tracker import ByteTracker
 from visualization.debug_vis import DebugVisualizer
 from world_model.scene_graph import SceneGraph
 from perception.depth_estimator import DepthAnythingEstimator, NullDepthEstimator
+from perception.appearance_extractor import (
+    AppearanceExtractor, NullAppearanceExtractor,
+)
+from world_model.world_map import WorldMap
 from perception.pose_estimator import NullPoseEstimator, CameraPose
 from perception.transform_tree import TransformTree
 
@@ -147,11 +151,54 @@ class Pipeline:
         # application otherwise.
         self._transform_tree = self._build_transform_tree()
 
+        # Appearance extractor + long-term spatial memory.
+        # Both opt-in; default config keeps them off so existing
+        # deployments are unaffected.
+        self._appearance_extractor = self._build_appearance_extractor()
+        self._world_map = self._build_world_map()
+
         self._tracker    = ByteTracker(raw)
-        self._scene_graph = SceneGraph(raw, transform_tree=self._transform_tree)
+        self._scene_graph = SceneGraph(
+            raw,
+            transform_tree=self._transform_tree,
+            world_map=self._world_map,
+        )
         self._visualizer = DebugVisualizer(cfg)
         self._visualizer.connect_rerun()
         self._writer     = None
+
+    def _build_appearance_extractor(self) -> AppearanceExtractor:
+        """Factory for AppearanceExtractor keyed on appearance.type."""
+        ap_type = self._cfg.appearance.type
+        if ap_type == "null":
+            return NullAppearanceExtractor()
+        if ap_type == "dinov2":
+            from perception.appearance_extractor import DINOv2AppearanceExtractor
+            ext = DINOv2AppearanceExtractor(
+                model_name=self._cfg.appearance.model,
+                device=self._cfg.appearance.device,
+            )
+            ext.warmup()
+            log.info("AppearanceExtractor: %r", ext)
+            return ext
+        raise ValueError(
+            f"Unknown appearance.type={ap_type!r}. Supported: 'null', 'dinov2'."
+        )
+
+    def _build_world_map(self) -> Optional[WorldMap]:
+        """Construct WorldMap from config; returns None when disabled."""
+        wm = self._cfg.world_map
+        if not wm.enabled:
+            return None
+        log.info(
+            "WorldMap enabled (gate=%.2f m, sim_thr=%.2f)",
+            wm.spatial_gate_m, wm.similarity_threshold,
+        )
+        return WorldMap(
+            spatial_gate_m=wm.spatial_gate_m,
+            similarity_threshold=wm.similarity_threshold,
+            allow_spatial_only=wm.allow_spatial_only,
+        )
 
     def _build_pose_estimator(self, raw: dict):
         """Factory for PoseEstimator backends keyed on pose_estimator.type."""
@@ -294,11 +341,23 @@ class Pipeline:
                     camera_pose,
                     camera_frame=self._cfg.coordinate_frames.camera_frame,
                 )
+
+            # Per-track appearance embeddings for WorldMap re-association.
+            # Only computed when an extractor is configured AND the
+            # world map is enabled — otherwise it's wasted GPU time.
+            appearance_map = {}
+            if self._world_map is not None and confirmed_tracks:
+                bboxes = [tr.bbox_xyxy for tr in confirmed_tracks]
+                embs = self._appearance_extractor.extract(frame.image, bboxes)
+                for tr, emb in zip(confirmed_tracks, embs):
+                    appearance_map[tr.track_id] = emb
+
             self._scene_graph.update(
                 confirmed_tracks=confirmed_tracks,
                 lost_tracks=self._tracker.lost_tracks,
                 timestamp=frame.timestamp,
                 depth_estimates=depth_map,
+                appearance_embeddings=appearance_map,
                 camera_pose=camera_pose,
             )
 

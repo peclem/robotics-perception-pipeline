@@ -123,6 +123,15 @@ pose_estimator:
   checkpoint: null          # null → third_party/DPVO/models/dpvo.pth
   stride: 2                 # run DPVO every Nth frame → pose at 30/stride Hz
   patches_per_frame: 96     # DPVO accuracy/speed knob (lower = faster, less accurate)
+appearance:
+  type: "null"              # 'null' | 'dinov2'
+  model: "facebook/dinov2-small"  # ~600 MB VRAM, 384-dim
+  device: "cuda"
+world_map:
+  enabled: false            # long-term spatial memory of STATIC + SEMI_STATIC
+  spatial_gate_m: 1.5       # re-association candidates within this distance
+  similarity_threshold: 0.75   # cosine threshold ∈ [-1, 1]
+  allow_spatial_only: true  # fall back to spatial-only when embeddings missing
 occupancy_grid:
   enabled: false            # publish nav_msgs/OccupancyGrid from the scene graph
   resolution_m: 0.05        # 5 cm per cell (Nav2 default)

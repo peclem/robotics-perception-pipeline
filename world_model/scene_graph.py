@@ -56,6 +56,7 @@ from world_model.stability import (
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from perception.transform_tree import TransformTree
+    from world_model.world_map import WorldMap
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ class SceneGraph:
         self,
         config: dict,
         transform_tree: Optional["TransformTree"] = None,
+        world_map:      Optional["WorldMap"]      = None,
     ) -> None:
         self._config = config
         cfg = config.get("world_model", {})
@@ -142,6 +144,14 @@ class SceneGraph:
         self._tree: Optional["TransformTree"] = transform_tree
         self._camera_frame: str = cfg.get("camera_frame", "camera_frame")
 
+        # Optional long-term spatial memory. When set, STATIC and
+        # SEMI_STATIC objects with a known world position are inserted
+        # or re-associated against this map on first detection. The
+        # SceneGraph stores the WorldMap-assigned persistent_id on the
+        # ObjectState; ByteTracker's track_id stays as the session-local
+        # identifier.
+        self._world_map: Optional["WorldMap"] = world_map
+
         self._objects: Dict[int, ObjectState] = {}
         self._frame_count: int = 0
 
@@ -156,6 +166,7 @@ class SceneGraph:
         timestamp:        float,
         depth_estimates:  Optional[dict] = None,
         camera_pose=None,
+        appearance_embeddings: Optional[dict] = None,
     ) -> None:
         """
         Synchronise the scene graph with the current tracker state.
@@ -178,7 +189,13 @@ class SceneGraph:
         confirmed_ids = set()
         for track in confirmed_tracks:
             est = depth_estimates.get(track.track_id) if depth_estimates else None
-            self._upsert(track, timestamp, is_lost=False, depth_estimate=est, camera_pose=camera_pose)
+            emb = (appearance_embeddings.get(track.track_id)
+                   if appearance_embeddings else None)
+            self._upsert(
+                track, timestamp, is_lost=False,
+                depth_estimate=est, camera_pose=camera_pose,
+                embedding=emb,
+            )
             confirmed_ids.add(track.track_id)
 
         # Step 2: mark lost tracks
@@ -200,6 +217,7 @@ class SceneGraph:
         is_lost:   bool,
         camera_pose=None,
         depth_estimate: Optional["DepthEstimate"] = None,
+        embedding: Optional[np.ndarray] = None,
     ) -> None:
         """Create or update the ObjectState for a track."""
         snap = track.kf.snapshot(timestamp=timestamp, frame_idx=self._frame_count)
@@ -249,6 +267,26 @@ class SceneGraph:
         if depth_estimate is not None and depth_estimate.position_3d is not None:
             obj.position_3d = depth_estimate.position_3d.copy()
             obj.position_world = self._to_world(obj.position_3d, camera_pose)
+
+        # WorldMap re-association: only attempted for STATIC and
+        # SEMI_STATIC objects with a known world position. DYNAMIC
+        # objects don't belong in long-term memory — they're
+        # ephemeral by definition.
+        if (
+            self._world_map is not None
+            and obj.position_world is not None
+            and obj.stability >= StabilityClass.SEMI_STATIC
+            and obj.persistent_id is None
+        ):
+            entry, _was_new = self._world_map.insert_or_re_associate(
+                class_name=obj.class_name,
+                class_id=obj.class_id,
+                position_world=obj.position_world,
+                embedding=embedding,
+                stability=obj.stability,
+                timestamp=timestamp,
+            )
+            obj.persistent_id = entry.persistent_id
 
     def _to_world(
         self,

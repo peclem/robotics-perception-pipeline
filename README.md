@@ -92,12 +92,15 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] Per-class spatial memory STATIC / SEMI_STATIC / DYNAMIC    ║
     ║                               classification (class prior +     ║
     ║                               motion override). STATIC objects  ║
-    ║                               (chairs, fridges, etc.) persist   ║
-    ║                               indefinitely; DYNAMIC (people,    ║
-    ║                               animals) decay in seconds.        ║
+    ║                               persist indefinitely; DYNAMIC     ║
+    ║                               decay in seconds.                 ║
+    ║  [✓] WorldMap + ReID          DINOv2 foundation-model           ║
+    ║                               embeddings, spatial gate +        ║
+    ║                               cosine similarity re-association  ║
+    ║                               on revisit. ObjectState carries   ║
+    ║                               a stable persistent_id across     ║
+    ║                               ByteTracker ID resets.            ║
     ║  [ ] Static obstacle layer    pre-mapped walls; needs SLAM      ║
-    ║  [ ] Persistent map + ReID    re-association on revisit         ║
-    ║                               (Pass B — DINOv2/CLIP embeddings) ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
@@ -430,12 +433,13 @@ extension first — see "DPVO setup" above.
 
     python3 -m pytest tests/ -m "not integration" -v
 
-446 unit tests across detection, tracking, state estimation, world
+473 unit tests across detection, tracking, state estimation, world
 model, coordinate frames (TransformTree), DPVO wrapper, occupancy
-grid, stability classification, visualisation, and benchmarks. All
-tests use SyntheticCamera or synthetic data — no hardware required.
-Integration tests (real GPU, live DPVO model) are marked and excluded
-from CI; run with `pytest -m integration`.
+grid, stability classification, appearance extractor, WorldMap,
+visualisation, and benchmarks. All tests use SyntheticCamera or
+synthetic data — no hardware required. Integration tests (real GPU,
+live DPVO / DINOv2 models) are marked and excluded from CI; run with
+`pytest -m integration`.
 
 ---
 
@@ -489,6 +493,17 @@ All parameters are externalised in config/default.yaml.
         promote_speed_px_s: 10.0    # stationary → promote DYNAMIC objects
         promote_frames:     900     # sustained for N frames
 
+    appearance:                 # ReID embedding backend
+        type: "null"            # 'null' | 'dinov2'
+        model: "facebook/dinov2-small"
+        device: "cuda"
+
+    world_map:                  # long-term spatial memory
+        enabled: false
+        spatial_gate_m: 1.5     # re-association candidates within this distance
+        similarity_threshold: 0.75   # cosine similarity threshold
+        allow_spatial_only: true     # fall back when embeddings missing
+
 Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
 ---
@@ -516,14 +531,17 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 ## Project structure
 
     perception/          Camera interface, detector, depth estimator,
-                          pose estimator (Null + DPVO), TransformTree,
+                          pose estimator (Null + DPVO), appearance
+                          extractor (Null + DINOv2), TransformTree,
                           typed config
     tracking/            ByteTrack, association, motion compensation, Track
     state_estimation/    Kalman Filter, Extended KF, NIS/NEES diagnostics
     world_model/         SceneGraph, ObjectState (+ position_world,
-                          stability), spatial queries (camera- and
-                          world-frame), OccupancyGridBuilder (dynamic
-                          obstacle layer), stability classification
+                          stability, persistent_id), spatial queries
+                          (camera- and world-frame), OccupancyGridBuilder
+                          (dynamic obstacle layer), stability classification,
+                          WorldMap (long-term spatial memory + ReID
+                          re-association)
     visualization/       Rerun.io logger, OpenCV annotator
     ros2_ws/             ROS2 colcon workspace
                           src/robotics_perception_ros2/
@@ -557,16 +575,13 @@ the median metric depth. Deferred until Phase 1 validation work
 DPV-SLAM extension adds long-term loop closure on top of DPVO with
 the same wrapper API. Drop-in upgrade when drift becomes a concern.
 
-**Spatial memory + ReID re-association (Pass B).** Per-class
-stability already keeps STATIC objects indefinitely in the SceneGraph
-(see "PER-CLASS SPATIAL MEMORY" in the architecture diagram). The
-follow-on work is a WorldMap layer that indexes them by world
-position + appearance embedding (DINOv2 or CLIP-ReID), so a robot
-revisiting a region can re-associate "is this the chair I saw 10
-minutes ago?" via spatial gating + cosine similarity. Foundation
-models generalise across the 80 COCO classes — unlike classical
-person-only ReID. Pass A (current) keeps the objects in memory;
-Pass B adds the recognition step.
+**Eviction policy for WorldMap.** WorldMap currently grows
+monotonically — entries are never auto-evicted. A production
+deployment should add (a) a max-age cap, (b) a memory-size cap with
+LRU eviction, and (c) "revisited and not seen" eviction (robot
+returns to a region and doesn't observe a remembered entry → mark
+for verification, evict after K confirmations). Deferred because
+the right policy is deployment-specific.
 
 **ReID appearance features.** The association cost matrix in
 tracking/association.py accepts an additional cosine distance term.
