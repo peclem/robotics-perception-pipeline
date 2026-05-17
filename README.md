@@ -89,9 +89,15 @@ marked. Unimplemented components and their integration points are identified.
     ║                               2σ-covariance inflation per       ║
     ║                               object, depth-projected when      ║
     ║                               available                         ║
-    ║  [ ] Static obstacle layer    pre-mapped walls/furniture;       ║
-    ║                               needs SLAM                        ║
-    ║  [ ] Persistent map           SLAM integration                  ║
+    ║  [✓] Per-class spatial memory STATIC / SEMI_STATIC / DYNAMIC    ║
+    ║                               classification (class prior +     ║
+    ║                               motion override). STATIC objects  ║
+    ║                               (chairs, fridges, etc.) persist   ║
+    ║                               indefinitely; DYNAMIC (people,    ║
+    ║                               animals) decay in seconds.        ║
+    ║  [ ] Static obstacle layer    pre-mapped walls; needs SLAM      ║
+    ║  [ ] Persistent map + ReID    re-association on revisit         ║
+    ║                               (Pass B — DINOv2/CLIP embeddings) ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
@@ -424,12 +430,12 @@ extension first — see "DPVO setup" above.
 
     python3 -m pytest tests/ -m "not integration" -v
 
-428 unit tests across detection, tracking, state estimation, world
+446 unit tests across detection, tracking, state estimation, world
 model, coordinate frames (TransformTree), DPVO wrapper, occupancy
-grid, visualisation, and benchmarks. All tests use SyntheticCamera
-or synthetic data — no hardware required. Integration tests (real
-GPU, live DPVO model) are marked and excluded from CI; run with
-`pytest -m integration`.
+grid, stability classification, visualisation, and benchmarks. All
+tests use SyntheticCamera or synthetic data — no hardware required.
+Integration tests (real GPU, live DPVO model) are marked and excluded
+from CI; run with `pytest -m integration`.
 
 ---
 
@@ -472,6 +478,17 @@ All parameters are externalised in config/default.yaml.
             person: 0.40
             car:    2.00
 
+    stability:
+        timeouts_s:         # per-class memory durations (seconds)
+            DYNAMIC:     1.5
+            SEMI_STATIC: 60.0
+            # STATIC defaults to inf (never auto-pruned)
+        class_overrides: {}     # COCO class → STATIC/SEMI_STATIC/DYNAMIC
+        demote_speed_px_s:  100.0   # observed motion → demote to DYNAMIC
+        demote_frames:      90      # sustained for N frames
+        promote_speed_px_s: 10.0    # stationary → promote DYNAMIC objects
+        promote_frames:     900     # sustained for N frames
+
 Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
 ---
@@ -503,9 +520,10 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           typed config
     tracking/            ByteTrack, association, motion compensation, Track
     state_estimation/    Kalman Filter, Extended KF, NIS/NEES diagnostics
-    world_model/         SceneGraph, ObjectState (+ position_world),
-                          spatial queries (camera- and world-frame),
-                          OccupancyGridBuilder (dynamic obstacle layer)
+    world_model/         SceneGraph, ObjectState (+ position_world,
+                          stability), spatial queries (camera- and
+                          world-frame), OccupancyGridBuilder (dynamic
+                          obstacle layer), stability classification
     visualization/       Rerun.io logger, OpenCV annotator
     ros2_ws/             ROS2 colcon workspace
                           src/robotics_perception_ros2/
@@ -538,6 +556,17 @@ the median metric depth. Deferred until Phase 1 validation work
 **Loop closure (DPV-SLAM).** DPVO drifts over long runs. Princeton's
 DPV-SLAM extension adds long-term loop closure on top of DPVO with
 the same wrapper API. Drop-in upgrade when drift becomes a concern.
+
+**Spatial memory + ReID re-association (Pass B).** Per-class
+stability already keeps STATIC objects indefinitely in the SceneGraph
+(see "PER-CLASS SPATIAL MEMORY" in the architecture diagram). The
+follow-on work is a WorldMap layer that indexes them by world
+position + appearance embedding (DINOv2 or CLIP-ReID), so a robot
+revisiting a region can re-associate "is this the chair I saw 10
+minutes ago?" via spatial gating + cosine similarity. Foundation
+models generalise across the 80 COCO classes — unlike classical
+person-only ReID. Pass A (current) keeps the objects in memory;
+Pass B adds the recognition step.
 
 **ReID appearance features.** The association cost matrix in
 tracking/association.py accepts an additional cosine distance term.

@@ -28,6 +28,7 @@ from typing import Deque, List, Optional
 import numpy as np
 
 from state_estimation.kalman_filter import KFSnapshot
+from world_model.stability import StabilityClass, stability_for_class
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from perception.pose_estimator import CameraPose
@@ -65,6 +66,11 @@ class ObjectState:
     is_lost:    bool                = False
     position_3d: Optional[np.ndarray] = None   # (3,) [X, Y, Z] in metres, camera frame; None if unavailable
     position_world: Optional[np.ndarray] = None  # (3,) [X, Y, Z] in metres, world (map) frame; None if no ego-pose
+    stability:  StabilityClass      = StabilityClass.SEMI_STATIC
+    # Frame counters used by SceneGraph's motion-based stability override.
+    # Reset whenever the relevant condition lapses.
+    _moving_frames:     int         = 0
+    _stationary_frames: int         = 0
     max_history: int                = 30
     history:    Deque[KFSnapshot]   = field(
         default_factory=lambda: deque(maxlen=30)

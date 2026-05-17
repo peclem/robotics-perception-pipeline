@@ -84,8 +84,27 @@ visualization:
   velocity_arrow_scale: 0.5
 world_model:
   max_history: 30
+  # Legacy field — applies to DYNAMIC objects only. Per-class overrides
+  # via the stability section below are preferred for new work.
   lost_timeout_s: 1.5
   camera_frame: camera_frame
+stability:
+  # Per-class memory durations. Override the DEFAULT_TIMEOUTS_S from
+  # world_model/stability.py. inf = "never prune by timeout" (STATIC
+  # default). Comment out a key to keep its default.
+  timeouts_s:
+    DYNAMIC:     1.5
+    SEMI_STATIC: 60.0
+    # STATIC:    .inf       # never auto-pruned
+  # Per-COCO-class stability overrides. Useful when the default table
+  # doesn't match a specific deployment (e.g. force person → STATIC
+  # for a mannequin store). Keys are COCO class names.
+  class_overrides: {}
+  # Motion-based override thresholds (KF pixel velocity).
+  demote_speed_px_s:  100.0   # px/s — above this counts as "moving"
+  demote_frames:      90      # sustained for N frames → demote stability
+  promote_speed_px_s: 10.0    # px/s — below this counts as "stationary"
+  promote_frames:     900     # sustained for N frames → promote stability
 coordinate_frames:
   enabled: false
   root_frame: map

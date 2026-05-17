@@ -47,6 +47,12 @@ import numpy as np
 
 from tracking.track import Track
 from world_model.object_state import ObjectState
+from world_model.stability import (
+    DEFAULT_TIMEOUTS_S,
+    StabilityClass,
+    stability_for_class,
+    timeout_for_stability,
+)
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from perception.transform_tree import TransformTree
@@ -85,8 +91,50 @@ class SceneGraph:
         # Maximum history snapshots per object
         self._max_history: int = int(cfg.get("max_history", 30))
 
-        # How long (seconds) to keep a LOST object before pruning it
-        self._lost_timeout: float = float(cfg.get("lost_timeout_s", 1.0))
+        # Per-stability lost-timeouts. Start from defaults
+        # (DYNAMIC=1.5s, SEMI_STATIC=60s, STATIC=∞), then apply two
+        # layers of overrides:
+        #   1. Legacy world_model.lost_timeout_s — backwards-compat for
+        #      configs that don't know about stability classes yet.
+        #      Treated as the DYNAMIC timeout (the class most callers
+        #      meant by "lost timeout" pre-Pass-A).
+        #   2. stability.timeouts_s.<CLASS> — per-class overrides, take
+        #      precedence over the legacy field.
+        stab_cfg = config.get("stability", {})
+        self._stability_timeouts: Dict[StabilityClass, float] = dict(DEFAULT_TIMEOUTS_S)
+        if "lost_timeout_s" in cfg:
+            self._stability_timeouts[StabilityClass.DYNAMIC] = float(cfg["lost_timeout_s"])
+        timeout_overrides_raw = stab_cfg.get("timeouts_s", {}) or {}
+        for name, secs in timeout_overrides_raw.items():
+            try:
+                self._stability_timeouts[StabilityClass[name.upper()]] = float(secs)
+            except KeyError:
+                log.warning(
+                    "SceneGraph: unknown stability class %r in stability.timeouts_s",
+                    name,
+                )
+
+        # Per-COCO-class stability overrides (e.g. tighten "person" to
+        # DYNAMIC in a setting where the default isn't wanted).
+        class_overrides_raw = stab_cfg.get("class_overrides", {}) or {}
+        self._class_stability_overrides: Dict[str, StabilityClass] = {}
+        for cls_name, stab_name in class_overrides_raw.items():
+            try:
+                self._class_stability_overrides[str(cls_name)] = \
+                    StabilityClass[stab_name.upper()]
+            except KeyError:
+                log.warning(
+                    "SceneGraph: unknown stability class %r for %s",
+                    stab_name, cls_name,
+                )
+
+        # Motion-override thresholds (pixel velocity + sustained frame count).
+        # Speed is in px/s — depends on camera resolution + object distance.
+        # Defaults tuned for ~30 Hz pipeline at typical webcam resolution.
+        self._demote_speed_px_s:  float = float(stab_cfg.get("demote_speed_px_s",  100.0))
+        self._demote_frames:      int   = int(stab_cfg.get("demote_frames",        90))   # 3 s @ 30 Hz
+        self._promote_speed_px_s: float = float(stab_cfg.get("promote_speed_px_s", 10.0))
+        self._promote_frames:     int   = int(stab_cfg.get("promote_frames",       900))  # 30 s @ 30 Hz
 
         # Optional coordinate frame manager. When set, position_world is
         # computed by tree lookup (camera_frame → root). When None,
@@ -169,6 +217,9 @@ class SceneGraph:
             obj.class_name = track.class_name
             obj.add_snapshot(snap)
         else:
+            initial_stability = stability_for_class(
+                track.class_name, self._class_stability_overrides,
+            )
             obj = ObjectState(
                 track_id   = track.track_id,
                 class_id   = track.class_id,
@@ -180,14 +231,20 @@ class SceneGraph:
                 last_seen  = timestamp,
                 n_updates  = track.n_hits,
                 is_lost    = is_lost,
+                stability  = initial_stability,
                 max_history= self._max_history,
             )
             obj.add_snapshot(snap)
             self._objects[track.track_id] = obj
             log.debug(
-                "SceneGraph: new object id=%d class=%s",
-                track.track_id, track.class_name,
+                "SceneGraph: new object id=%d class=%s stability=%s",
+                track.track_id, track.class_name, initial_stability.name,
             )
+
+        # Motion-based stability override on every confirmed update.
+        # Skip while lost — KF predictions don't reflect observed motion.
+        if not is_lost:
+            self._update_stability(obj)
 
         if depth_estimate is not None and depth_estimate.position_3d is not None:
             obj.position_3d = depth_estimate.position_3d.copy()
@@ -223,12 +280,70 @@ class SceneGraph:
             return camera_pose.transform_point(p_camera)
         return None
 
+    def _update_stability(self, obj: ObjectState) -> None:
+        """
+        Motion-based stability override.
+
+        STATIC objects observed to move > demote_speed_px_s sustained
+        for demote_frames are demoted to DYNAMIC. DYNAMIC objects
+        sitting still (< promote_speed_px_s) for promote_frames are
+        promoted to SEMI_STATIC. SEMI_STATIC objects can demote with
+        movement but never auto-promote to STATIC (STATIC requires
+        an explicit class prior).
+
+        Frame counters reset whenever the relevant condition lapses,
+        which gives natural hysteresis — a single jittery frame
+        doesn't trip the transition.
+        """
+        speed_px = obj.speed
+        # Demote-on-motion: applies to anything currently above DYNAMIC.
+        if obj.stability != StabilityClass.DYNAMIC:
+            if speed_px > self._demote_speed_px_s:
+                obj._moving_frames += 1
+                if obj._moving_frames >= self._demote_frames:
+                    log.debug(
+                        "SceneGraph: id=%d (%s) %s → DYNAMIC (sustained motion)",
+                        obj.track_id, obj.class_name, obj.stability.name,
+                    )
+                    obj.stability = StabilityClass.DYNAMIC
+                    obj._moving_frames = 0
+            else:
+                obj._moving_frames = 0
+
+        # Promote-on-stillness: DYNAMIC sitting still → SEMI_STATIC.
+        if obj.stability == StabilityClass.DYNAMIC:
+            if speed_px < self._promote_speed_px_s:
+                obj._stationary_frames += 1
+                if obj._stationary_frames >= self._promote_frames:
+                    log.debug(
+                        "SceneGraph: id=%d (%s) DYNAMIC → SEMI_STATIC (stationary)",
+                        obj.track_id, obj.class_name,
+                    )
+                    obj.stability = StabilityClass.SEMI_STATIC
+                    obj._stationary_frames = 0
+            else:
+                obj._stationary_frames = 0
+
     def _prune(self, now: float) -> None:
-        """Remove objects that have been LOST for longer than lost_timeout_s."""
-        to_remove = [
-            tid for tid, obj in self._objects.items()
-            if obj.is_lost and (now - obj.last_seen) > self._lost_timeout
-        ]
+        """
+        Remove LOST objects whose stability-class timeout has elapsed.
+
+        STATIC objects with `timeout_for_stability` == inf are never
+        pruned by this mechanism — they live in the SceneGraph
+        indefinitely until evicted by a higher-level policy (the
+        WorldMap layer in Pass B).
+        """
+        to_remove = []
+        for tid, obj in self._objects.items():
+            if not obj.is_lost:
+                continue
+            timeout = timeout_for_stability(
+                obj.stability, self._stability_timeouts,
+            )
+            if timeout == float("inf"):
+                continue
+            if (now - obj.last_seen) > timeout:
+                to_remove.append(tid)
         for tid in to_remove:
             log.debug("SceneGraph: pruning stale object id=%d", tid)
             del self._objects[tid]
