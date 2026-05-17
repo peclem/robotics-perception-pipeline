@@ -3,8 +3,10 @@
 ![CI](https://github.com/peclem/robotics-perception-pipeline/actions/workflows/ci.yml/badge.svg)
 
 A modular perception stack for mobile robotics. Implements camera-based
-multi-object detection, tracking, and state estimation, with a probabilistic
-world model designed as a perception layer for ROS2 navigation systems.
+multi-object detection, tracking, monocular ego-pose, and state estimation,
+with a probabilistic world model exposed both as a standalone Python pipeline
+and as a set of ROS2 adapter nodes for direct integration into Nav2-style
+navigation stacks.
 
 ---
 
@@ -42,6 +44,7 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] EKF — constant turn rate 9D state + ω, analytical Jac.    ║
     ║  [✓] Camera motion comp.      LK optical flow + affine RANSAC   ║
     ║  [✓] Monocular depth          Depth Anything V2, metric         ║
+    ║  [✓] Monocular ego-pose       DPVO (deep patch VO), 15 Hz       ║
     ║  [ ] ReID embeddings          OSNet, IoU + cosine cost          ║
     ║  [ ] Stereo depth             StereoDepthEstimator ABC          ║
     ║  [ ] IMU pre-integration      error-state EKF fusion            ║
@@ -52,17 +55,24 @@ marked. Unimplemented components and their integration points are identified.
     ╔══════════════════════════════════════════════════════════════════╗
     ║  COORDINATE FRAMES                                               ║
     ║                                                                  ║
-    ║  [ ] camera_frame → base_link → odom → map transform tree      ║
-    ║  [ ] Ego-pose estimation      monocular VIO or stereo + IMU    ║
+    ║  [✓] TransformTree            map ← odom ← base_link ←         ║
+    ║                               camera_frame, static + dynamic     ║
+    ║                               edges, lookup via common ancestor  ║
+    ║  [✓] Ego-pose (monocular)     DPVOPoseEstimator wraps DPVO,      ║
+    ║                               stride-decoupled (15 Hz pose at    ║
+    ║                               30 Hz camera). NullPoseEstimator   ║
+    ║                               fallback for camera-frame-only     ║
+    ║                               mode.                              ║
+    ║  [ ] Metric scale anchor      monocular VO has unobservable      ║
+    ║                               scale; anchor against Depth        ║
+    ║                               Anything V2 (deferred to Phase 1   ║
+    ║                               validation work)                   ║
+    ║  [ ] SLAM / loop closure      DPV-SLAM extension for drift       ║
     ║                                                                  ║
-    ║  Object positions are currently in the camera frame.            ║
-    ║  A planning layer requires positions in a fixed world frame.    ║
-    ║  Integration point: SceneGraph.update() accepts a camera pose   ║
-    ║  parameter; all ObjectState positions are then expressed in     ║
-    ║  the map frame automatically.                                   ║
-    ║                                                                  ║
-    ║  Camera motion compensation (implemented) corrects 2D track     ║
-    ║  states for ego-motion but does not produce a full SE(3) pose.  ║
+    ║  ObjectState.position_world (X, Y, Z) metres in the map frame   ║
+    ║  is populated when ego-pose is available. SceneGraph.update()    ║
+    ║  routes via the transform tree; query_nearby(frame='world')      ║
+    ║  is the planner-facing metric query.                             ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
@@ -133,18 +143,34 @@ marked. Unimplemented components and their integration points are identified.
             NIS = yᵀ S⁻¹ y  ~  χ²(4),  bounds [0.711, 9.488]
         │
         ▼
+    DPVOPoseEstimator (when pose_estimator.type == 'dpvo')
+        Lazy DPVO init on first frame; stride-based rate decoupling
+        (default stride=2 → 15 Hz pose at 30 Hz camera). Returns
+        CameraPose(R, t) in world ← camera convention.
+        │
+        ▼
+    TransformTree
+        Pushes camera_pose into map ← camera_frame edge each frame.
+        Resolves arbitrary (target, source) lookups via the common
+        ancestor on the directed tree.
+        │
+        ▼
     SceneGraph
         ObjectState per confirmed track:
-            position    (cx, cy)  pixels — camera frame
-            position_3d (X, Y, Z) metres — camera frame [¹]
-            covariance  8×8 full matrix
-            velocity    (vx, vy, vw, vh) pixels/s
-            trajectory  bounded KFSnapshot history
+            position       (cx, cy)  pixels — camera frame
+            position_3d    (X, Y, Z) metres — camera frame
+            position_world (X, Y, Z) metres — world (map) frame [¹]
+            covariance     8×8 full matrix
+            velocity       (vx, vy, vw, vh) pixels/s
+            trajectory     bounded KFSnapshot history
         │
-        └──▶ query_nearby(position, radius) → planner interface
+        └──▶ query_nearby(pos, radius, frame='camera' | 'world')
+             → planner interface (pixel or metric)
 
-    [¹] Camera-frame metric positions. World-frame positions require
-        ego-pose estimation and a coordinate frame transform tree.
+    [¹] position_world is None when no ego-pose is available
+        (NullPoseEstimator, or during DPVO's bootstrap window). The
+        scale is up to a monocular ambiguity until anchored against
+        Depth Anything V2 (deferred).
 
 ---
 
@@ -212,11 +238,20 @@ the model path in config/default.yaml.
     Object detection         YOLOv8n (Ultralytics)      ~5 ms
     Multi-object tracking    ByteTrack                  ~0.5 ms
     State estimation         KF / EKF (NumPy)           ~0.1 ms
-    Depth estimation         Depth Anything V2           ~10 ms
+    Depth estimation         Depth Anything V2          ~10 ms
     Camera motion comp.      OpenCV LK + RANSAC         ~1 ms
-    World model              Custom scene graph          ~0.2 ms
-    Total (depth disabled)                              ~7 ms  (143 Hz)
-    Total (depth enabled)                               ~17 ms  (58 Hz)
+    Monocular ego-pose       DPVO @ stride 2            ~17 ms / call
+                                                         (every 2nd frame
+                                                          → ~8 ms amortised
+                                                          at 640×480)
+    World model              Custom scene graph         ~0.2 ms
+    Total (depth disabled, pose disabled)              ~7 ms  (143 Hz)
+    Total (depth enabled,  pose disabled)              ~17 ms  (58 Hz)
+    Total (depth + DPVO at stride 2)                   ~25 ms  (40 Hz)
+
+    Measured on real video (data/sample.mp4). Synthetic random-noise
+    frames overstate DPVO latency 2× — DPVO inserts keyframes constantly
+    without temporal coherence.
 
 ---
 
@@ -235,6 +270,10 @@ the model path in config/default.yaml.
 
     RERUN_ENABLED=false python3 launch.py --source synthetic
     RERUN_ENABLED=false python3 launch.py --source video --input data/clip.mp4
+
+To enable DPVO ego-pose, see third_party/DPVO build steps and set
+`pose_estimator.type: dpvo` in config/default.yaml. To launch the ROS2
+graph, see the "ROS2 integration" section below.
 
 ---
 
@@ -324,10 +363,11 @@ extension first (see `third_party/DPVO/`).
 
     python3 -m pytest tests/ -m "not integration" -v
 
-248 unit tests across detection, tracking, state estimation, world model,
-and visualisation. All tests use SyntheticCamera or synthetic data —
-no hardware required. Integration tests (GPU, real model) are marked
-and excluded from CI.
+419 unit tests across detection, tracking, state estimation, world
+model, coordinate frames (TransformTree), DPVO wrapper, visualisation,
+and benchmarks. All tests use SyntheticCamera or synthetic data —
+no hardware required. Integration tests (real GPU, live DPVO model)
+are marked and excluded from CI; run with `pytest -m integration`.
 
 ---
 
@@ -366,10 +406,13 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
 ## Project structure
 
-    perception/          Camera interface, detector, depth estimator, config
+    perception/          Camera interface, detector, depth estimator,
+                          pose estimator (Null + DPVO), TransformTree,
+                          typed config
     tracking/            ByteTrack, association, motion compensation, Track
     state_estimation/    Kalman Filter, Extended KF, NIS/NEES diagnostics
-    world_model/         SceneGraph, ObjectState, spatial queries
+    world_model/         SceneGraph, ObjectState (+ position_world),
+                          spatial queries (camera- and world-frame)
     visualization/       Rerun.io logger, OpenCV annotator
     ros2_ws/             ROS2 colcon workspace
                           src/robotics_perception_ros2/
@@ -378,19 +421,29 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                             tracking_node            tracked Detection2DArray
                             pose_node                Odometry + tf broadcast
                             scene_graph_node         Detection3DArray
-    scripts/             Calibration, benchmark, detector training
-    tests/               248 unit tests — all hardware-free
+    scripts/             Calibration, benchmark (MOT17, DPVO latency),
+                          detector training
+    third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
+                          — not committed; see DPVO setup in README
+    tests/               419 unit tests — all hardware-free; integration
+                          tests marked separately
     config/              YAML configuration
 
 ---
 
 ## Extensions
 
-**Coordinate frame management.** Object positions are currently expressed
-in the camera frame. Expressing them in a fixed world frame requires
-ego-pose estimation (monocular VIO, or stereo + IMU) and a tf2-style
-transform tree. The integration point is SceneGraph.update(), which
-accepts an optional camera pose parameter.
+**Metric scale anchoring for DPVO.** Monocular VO has unobservable
+absolute scale — DPVO's translations are in arbitrary units until
+anchored. Depth Anything V2 already provides metric depth, so the
+calibration is feasible: at init (or via a continuous low-pass
+filter), compute the scale ratio between DPVO's reported depth and
+the median metric depth. Deferred until Phase 1 validation work
+(TUM RGB-D) provides ground truth to measure against.
+
+**Loop closure (DPV-SLAM).** DPVO drifts over long runs. Princeton's
+DPV-SLAM extension adds long-term loop closure on top of DPVO with
+the same wrapper API. Drop-in upgrade when drift becomes a concern.
 
 **ReID appearance features.** The association cost matrix in
 tracking/association.py accepts an additional cosine distance term.
@@ -422,6 +475,8 @@ estimation, with no additional inference cost at runtime.
     Thrun, Burgard & Fox (2005)      Probabilistic Robotics
     Yang et al. (2024)               Depth Anything V2 — arXiv:2406.09414
     Campos et al. (2021)             ORB-SLAM3 — arXiv:2007.11898
+    Teed, Lipson & Deng (2023)       DPVO — arXiv:2208.04726
+    Foote (2013)                     tf: the transform library (ICRA)
 
 ---
 
