@@ -252,6 +252,34 @@ The tracker association and Kalman filter are architecturally equivalent.
 FP dropped 49% and FN dropped 33% with fine-tuning, confirming that the
 tracker association is not the performance bottleneck.
 
+### Appearance-aware matching — MOT17 ablation (honest negative)
+
+Held-out validation pair (MOT17-09, MOT17-11, SDP detector track),
+fine-tuned YOLOv8n, otherwise identical config. Toggling
+`tracker.use_appearance` blends DINOv2 cosine distance into the
+Hungarian cost (StrongSORT-style; weight 0.25, EMA 0.9).
+
+    Configuration                Mean MOTA   FP     FN     IDSW   Mean Hz
+    ─────────────────────────────────────────────────────────────────────
+    IoU only (baseline)             50.2%   1744   5533   115     66
+    IoU + DINOv2 appearance         50.7%   1724   5523   116     31
+
+The architectural change is in (`tracker.use_appearance: true`,
+DINOv2 embeddings threaded through the matcher), but on this
+benchmark the measurable lift is within noise — +0.5 pp MOTA driven
+almost entirely by MOT17-09 (+1.6 pp); MOT17-11 regressed -0.5 pp.
+IDSW didn't drop. Throughput halved as expected from the added
+DINOv2 forward per detection.
+
+The reasonable interpretation: MOT17 is mostly well-separated upright
+pedestrians where IoU + the Kalman filter already disambiguates most
+matches. The detector is the dominant error source (FP+FN ≫ IDSW).
+Appearance-based ReID has its biggest payoff on DanceTrack-style
+benchmarks (similar appearances, dense crowds, frequent crossovers)
+or on long occlusion gaps where IoU is uninformative. The
+infrastructure is in place for those benchmarks when they're worth
+running.
+
 ---
 
 ## Engineering notes

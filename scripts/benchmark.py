@@ -24,6 +24,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from perception.camera_interface import CameraFrame, CameraIntrinsics
 from perception.config_loader import load_config
 from perception.detector import YOLOv8Detector
+from perception.appearance_extractor import (
+    AppearanceExtractor, NullAppearanceExtractor,
+)
 from tracking.tracker import ByteTracker
 
 
@@ -202,6 +205,27 @@ def make_frame_from_image(
 # Sequence runner
 # ---------------------------------------------------------------------------
 
+def _build_appearance_extractor(cfg: dict) -> AppearanceExtractor:
+    """
+    Build an AppearanceExtractor matching the benchmark config.
+    Returns a NullAppearanceExtractor when `appearance.type=='null'`
+    (the baseline path that produced the existing MOT17 numbers).
+    """
+    ap = cfg.get("appearance", {}) or {}
+    t = ap.get("type", "null")
+    if t == "null":
+        return NullAppearanceExtractor()
+    if t == "dinov2":
+        from perception.appearance_extractor import DINOv2AppearanceExtractor
+        return DINOv2AppearanceExtractor(
+            model_name=ap.get("model", "facebook/dinov2-small"),
+            device=ap.get("device", "cuda"),
+        )
+    raise ValueError(
+        f"benchmark: unknown appearance.type={t!r}. Supported: 'null', 'dinov2'."
+    )
+
+
 def run_sequence(
     seq_path: Path,
     detector: YOLOv8Detector,
@@ -220,7 +244,12 @@ def run_sequence(
     print(f"  Frames   : {len(frames)}  FPS: {info['fps']:.1f}")
     print(f"  Size     : {info['width']}x{info['height']}")
 
-    tracker     = ByteTracker(config)
+    tracker         = ByteTracker(config)
+    appearance      = _build_appearance_extractor(config)
+    use_appearance  = (config.get("tracker", {}).get("use_appearance", False)
+                       and not isinstance(appearance, NullAppearanceExtractor))
+    if use_appearance:
+        print(f"  Appearance: {type(appearance).__name__}")
     accumulator = MOTAAccumulator(iou_threshold=0.5)
     gt          = load_mot17_gt(gt_path) if gt_path.exists() else {}
     dt          = 1.0 / info["fps"]
@@ -243,7 +272,13 @@ def run_sequence(
 
         t0               = time.monotonic()
         detections       = detector.detect(frame)
-        confirmed_tracks = tracker.update(detections, frame)
+        det_embeddings = None
+        if use_appearance and detections:
+            bboxes = [d.bbox_xyxy for d in detections]
+            det_embeddings = appearance.extract(frame.image, bboxes)
+        confirmed_tracks = tracker.update(
+            detections, frame, detection_embeddings=det_embeddings,
+        )
         t_total         += time.monotonic() - t0
 
         for track in confirmed_tracks:

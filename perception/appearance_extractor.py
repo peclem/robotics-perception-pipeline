@@ -204,7 +204,14 @@ class DINOv2AppearanceExtractor(AppearanceExtractor):
             if crop.size == 0:
                 continue
             # DINOv2's processor expects RGB; image is BGR (OpenCV).
-            crops.append(crop[..., ::-1])
+            # `[..., ::-1]` returns a *view* with negative strides on the
+            # last axis. transformers' image processor passes that through
+            # to torch.from_numpy, which then raises
+            # "tensors with negative strides are not currently supported"
+            # — caught by the MOT17 benchmark run, not by unit tests
+            # because the unit tests used contiguous arrays. ascontiguousarray
+            # is the canonical fix and stays cheap (~50 µs per crop).
+            crops.append(np.ascontiguousarray(crop[..., ::-1]))
             out_idx.append(i)
 
         if not crops:
