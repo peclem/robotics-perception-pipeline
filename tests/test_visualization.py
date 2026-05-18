@@ -586,6 +586,103 @@ class TestRerunCameraPose:
                     if c["path"] == "world/ego_trajectory"]
 
 
+# ---------------------------------------------------------------------------
+# TestRerunWorldTracks — world-frame markers for tracked objects
+# ---------------------------------------------------------------------------
+
+class TestRerunWorldTracks:
+
+    def _obj(self, track_id=1, position_world=None, persistent_id=None,
+             class_name="person"):
+        from world_model.object_state import ObjectState
+        return ObjectState(
+            track_id=track_id, class_id=0, class_name=class_name,
+            position=np.array([0.0, 0.0]),
+            covariance=np.eye(8),
+            velocity=np.zeros(4),
+            score=0.9, last_seen=0.0, n_updates=1,
+            position_world=(
+                np.asarray(position_world, dtype=np.float64)
+                if position_world is not None else None
+            ),
+            persistent_id=persistent_id,
+            max_history=1,
+        )
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def test_emits_points3d_at_world_positions(self, cfg):
+        logger = self._ready_logger(cfg)
+        objs = [
+            self._obj(track_id=1, position_world=[1.0, 2.0, 0.5]),
+            self._obj(track_id=2, position_world=[-1.0, 0.0, 0.5],
+                       class_name="car"),
+        ]
+        logger.log_frame(make_frame(), [], [], scene_objects=objs)
+        calls = self._by_path(logger._rr, "world/scene/objects")
+        assert calls and calls[-1]["primitive"]["type"] == "Points3D"
+        positions = calls[-1]["primitive"]["positions"]
+        np.testing.assert_allclose(positions, [[1, 2, 0.5], [-1, 0, 0.5]],
+                                   atol=1e-6)
+
+    def test_persistent_id_appears_in_label(self, cfg):
+        logger = self._ready_logger(cfg)
+        objs = [
+            self._obj(track_id=7, position_world=[0, 0, 0],
+                       persistent_id=42),
+            self._obj(track_id=8, position_world=[1, 0, 0]),  # no p_id
+        ]
+        logger.log_frame(make_frame(), [], [], scene_objects=objs)
+        labels = self._by_path(logger._rr, "world/scene/objects")[-1] \
+            ["primitive"]["labels"]
+        assert "#7" in labels[0] and "p:42" in labels[0]
+        assert "#8" in labels[1] and "p:" not in labels[1]
+
+    def test_objects_without_position_world_skipped(self, cfg):
+        logger = self._ready_logger(cfg)
+        objs = [
+            self._obj(track_id=1, position_world=None),         # no world pos
+            self._obj(track_id=2, position_world=[5.0, 0, 0]),  # has it
+        ]
+        logger.log_frame(make_frame(), [], [], scene_objects=objs)
+        calls = self._by_path(logger._rr, "world/scene/objects")
+        assert calls
+        prim = calls[-1]["primitive"]
+        assert prim["type"] == "Points3D"
+        assert prim["positions"].shape == (1, 3)   # only obj 2
+        assert prim["labels"] == ["#2 person"]
+
+    def test_no_objects_emits_clear(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [], scene_objects=[])
+        clears = [c for c in self._by_path(logger._rr, "world/scene/objects")
+                  if c["primitive"]["type"] == "Clear"]
+        assert clears
+
+    def test_all_objects_lack_position_world_emits_clear(self, cfg):
+        logger = self._ready_logger(cfg)
+        objs = [
+            self._obj(track_id=1, position_world=None),
+            self._obj(track_id=2, position_world=None),
+        ]
+        logger.log_frame(make_frame(), [], [], scene_objects=objs)
+        clears = [c for c in self._by_path(logger._rr, "world/scene/objects")
+                  if c["primitive"]["type"] == "Clear"]
+        assert clears
+
+    def test_no_scene_objects_arg_means_no_call(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [])
+        assert not self._by_path(logger._rr, "world/scene/objects")
+
+
 class TestWSLHostDetect:
 
     def test_explicit_host_unchanged(self):

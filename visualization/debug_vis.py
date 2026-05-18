@@ -208,11 +208,13 @@ class DebugVisualizer:
         rooms=None,
         semantic_mask=None,
         camera_pose=None,
+        scene_objects=None,
     ) -> None:
         self._rlog.log_frame(
             frame, detections, tracks,
             occupancy_3d=occupancy_3d, rooms=rooms,
             semantic_mask=semantic_mask, camera_pose=camera_pose,
+            scene_objects=scene_objects,
         )
         self._rlog.log_metrics(detect_ms, track_ms, fps, n_lost)
 

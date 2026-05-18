@@ -433,6 +433,10 @@ flags, additionally:
   plus the rolling ego-trajectory as `LineStrips3D` at
   `world/ego_trajectory`. With this enabled, the image, voxels,
   rooms, and tracks all live in one 3D world view in the Rerun viewer.
+- **Tracked-object world markers** at `world/scene/objects` —
+  `rr.Points3D` for each `ObjectState.position_world`, labelled
+  `#track_id class p:persistent_id` so WorldMap re-association is
+  visible in the viewer. Always logged (cheap when no objects).
 - Per-track persistent_id (WorldMap re-association), metric depth,
   frame-level metrics (detector / tracker latency, FPS, lost-track count)
 
@@ -807,7 +811,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               669 unit tests — all hardware-free; integration
+    tests/               675 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 

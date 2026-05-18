@@ -230,6 +230,7 @@ class RerunLogger:
         rooms=None,
         semantic_mask=None,
         camera_pose=None,
+        scene_objects=None,
     ) -> None:
         """
         Log all visual data for one frame.
@@ -267,6 +268,8 @@ class RerunLogger:
                 self._log_rooms(rr, rooms)
             if semantic_mask is not None:
                 self._log_semantic(rr, semantic_mask)
+            if scene_objects is not None:
+                self._log_world_tracks(rr, scene_objects)
 
         except Exception as exc:
             log.debug("Rerun log_frame error (suppressed): %s", exc)
@@ -582,6 +585,53 @@ class RerunLogger:
             )
         except Exception as e:
             log.debug("Trajectory log failed: %s", e)
+
+    def _log_world_tracks(self, rr, objects) -> None:
+        """
+        Emit tracked-object world positions as 3D markers at
+        `world/scene/objects`. Each marker carries a label of the
+        form "#track_id class" (with "p:persistent_id" appended when
+        WorldMap re-association has assigned one) and the same
+        deterministic colour as its 2D bbox in image space.
+
+        Objects without `position_world` are silently skipped —
+        typically the case when no depth or ego-pose is available.
+        """
+        if not objects:
+            try:
+                rr.log("world/scene/objects", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+        positions: list = []
+        labels:    list = []
+        colors:    list = []
+        for obj in objects:
+            if obj.position_world is None or obj.position_world.shape[0] < 3:
+                continue
+            positions.append(np.asarray(obj.position_world[:3],
+                                        dtype=np.float32))
+            label = f"#{obj.track_id} {obj.class_name}"
+            if obj.persistent_id is not None:
+                label += f" p:{obj.persistent_id}"
+            labels.append(label)
+            colors.append(_track_colour_rgba(obj.track_id))
+        if not positions:
+            try:
+                rr.log("world/scene/objects", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+        try:
+            rr.log(
+                "world/scene/objects",
+                rr.Points3D(
+                    positions=np.asarray(positions, dtype=np.float32),
+                    labels=labels, colors=colors, radii=0.08,
+                ),
+            )
+        except Exception as e:
+            log.debug("World tracks log failed: %s", e)
 
     # ------------------------------------------------------------------
     # Metrics
