@@ -272,3 +272,97 @@ class TestStereoSGBMEndToEnd:
         # noisy; the real value here is that the pipeline runs).
         assert out[0].depth_m >= 0.0
         assert np.isfinite(out[0].depth_m)
+
+
+# ---------------------------------------------------------------------------
+# Config wiring: depth.type factory dispatch + validation
+# ---------------------------------------------------------------------------
+
+class TestDepthConfigWiring:
+    """
+    Exercises the depth.type factory in launch.Pipeline._build_depth_estimator
+    and the matching validation in perception.config_loader.
+    """
+
+    def _make_pipeline(self, depth_overrides: dict):
+        """
+        Build a Pipeline far enough to call _build_depth_estimator() without
+        actually opening a camera or loading a detector. _build_depth_estimator
+        only reads self._cfg.depth, so we can construct the object directly.
+        """
+        from perception.config_loader import (
+            PipelineConfig, DepthConfig,
+        )
+        from launch import Pipeline
+
+        cfg = PipelineConfig()
+        cfg.depth = DepthConfig(**depth_overrides)
+        # Pipeline.__init__ doesn't touch IO; safe to construct.
+        return Pipeline(cfg=cfg, source="synthetic", input_path=None)
+
+    def test_disabled_returns_null_estimator(self):
+        from perception.depth_estimator import NullDepthEstimator
+        pipe = self._make_pipeline({"enabled": False, "type": "depth_anything"})
+        est = pipe._build_depth_estimator()
+        assert isinstance(est, NullDepthEstimator)
+
+    def test_type_null_returns_null_estimator(self):
+        from perception.depth_estimator import NullDepthEstimator
+        pipe = self._make_pipeline({"enabled": True, "type": "null"})
+        est = pipe._build_depth_estimator()
+        assert isinstance(est, NullDepthEstimator)
+
+    def test_type_stereo_sgbm_returns_sgbm_estimator(self):
+        pipe = self._make_pipeline({
+            "enabled": True, "type": "stereo_sgbm",
+            "sgbm_num_disparities": 64, "sgbm_block_size": 5,
+        })
+        est = pipe._build_depth_estimator()
+        assert isinstance(est, StereoSGBMDepthEstimator)
+
+    def test_config_validation_rejects_unknown_type(self, tmp_path):
+        from perception.config_loader import (
+            load_config, ConfigValidationError,
+        )
+        p = tmp_path / "bad.yaml"
+        p.write_text(
+            "pipeline: {}\ncamera: {}\ndetector: {}\ntracker: {}\n"
+            "kalman_filter: {}\nvisualization: {}\n"
+            "depth: {type: igev_neural}\n"
+        )
+        with pytest.raises(ConfigValidationError, match="depth.type"):
+            load_config(p)
+
+    def test_config_validation_rejects_non_div16_num_disparities(self, tmp_path):
+        from perception.config_loader import (
+            load_config, ConfigValidationError,
+        )
+        p = tmp_path / "bad.yaml"
+        p.write_text(
+            "pipeline: {}\ncamera: {}\ndetector: {}\ntracker: {}\n"
+            "kalman_filter: {}\nvisualization: {}\n"
+            "depth: {sgbm_num_disparities: 50}\n"
+        )
+        with pytest.raises(ConfigValidationError, match="divisible by 16"):
+            load_config(p)
+
+    def test_config_validation_rejects_even_block_size(self, tmp_path):
+        from perception.config_loader import (
+            load_config, ConfigValidationError,
+        )
+        p = tmp_path / "bad.yaml"
+        p.write_text(
+            "pipeline: {}\ncamera: {}\ndetector: {}\ntracker: {}\n"
+            "kalman_filter: {}\nvisualization: {}\n"
+            "depth: {sgbm_block_size: 8}\n"
+        )
+        with pytest.raises(ConfigValidationError, match="must be odd"):
+            load_config(p)
+
+    def test_default_yaml_still_loads(self):
+        """default.yaml's new depth fields validate as a sanity check."""
+        from perception.config_loader import load_config
+        cfg = load_config("config/default.yaml")
+        assert cfg.depth.type == "depth_anything"
+        assert cfg.depth.sgbm_num_disparities == 96
+        assert cfg.depth.sgbm_block_size == 7

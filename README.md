@@ -492,8 +492,12 @@ All parameters are externalised in config/default.yaml.
         use_cmc: false      # true = camera motion compensation
 
     depth:
-        enabled: false      # true = Depth Anything V2 metric depth
+        enabled: false              # master switch (false → NullDepthEstimator)
+        type: depth_anything        # 'null' | 'depth_anything' | 'stereo_sgbm'
         model: "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+        # stereo_sgbm-only tunables — needs frame.right_image + intrinsics.baseline_m
+        sgbm_num_disparities: 96    # must be divisible by 16
+        sgbm_block_size: 7          # must be odd
 
     pose_estimator:
         type: "null"        # 'null' | 'dpvo'

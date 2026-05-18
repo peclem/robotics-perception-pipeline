@@ -271,9 +271,29 @@ class BenchmarkConfig:
 
 @dataclass
 class DepthConfig:
+    """
+    Depth backend selection.
+
+    type
+        'depth_anything' — DepthAnythingEstimator (monocular metric, GPU)
+        'stereo_sgbm'    — StereoSGBMDepthEstimator (classical, CPU,
+                           needs CameraFrame.right_image + intrinsics.baseline_m)
+        'null'           — NullDepthEstimator (no depth)
+
+    enabled
+        Master switch retained for backwards compatibility — when False,
+        NullDepthEstimator is used regardless of `type`. New configs
+        can equivalently set `type: null`.
+
+    SGBM tunables (only used when type == 'stereo_sgbm')
+    """
     enabled: bool = False
+    type:    str  = "depth_anything"
     model:   str  = "ZoeD_N"
     device:  str  = "cuda"
+    sgbm_min_disparity:   int = 0
+    sgbm_num_disparities: int = 96   # must be divisible by 16
+    sgbm_block_size:      int = 7    # must be odd
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -809,6 +829,37 @@ def _validate(raw: dict) -> None:
             "Supported: 'null', 'dpvo' (implemented), 'orbslam' (planned)."
         )
 
+    # Depth estimator
+    de_raw = raw.get("depth", {})
+    de_type = de_raw.get("type", "depth_anything")
+    if de_type not in ("null", "depth_anything", "stereo_sgbm"):
+        errors.append(
+            f"depth.type={de_type!r} is invalid. "
+            "Supported: 'null', 'depth_anything', 'stereo_sgbm'."
+        )
+    num_disp = de_raw.get("sgbm_num_disparities")
+    if num_disp is not None:
+        if not isinstance(num_disp, int) or num_disp <= 0:
+            errors.append(
+                f"depth.sgbm_num_disparities={num_disp!r} must be a positive int."
+            )
+        elif num_disp % 16 != 0:
+            errors.append(
+                f"depth.sgbm_num_disparities={num_disp} must be divisible by 16 "
+                "(cv2.StereoSGBM requirement)."
+            )
+    bs = de_raw.get("sgbm_block_size")
+    if bs is not None:
+        if not isinstance(bs, int) or bs <= 0:
+            errors.append(
+                f"depth.sgbm_block_size={bs!r} must be a positive int."
+            )
+        elif bs % 2 == 0:
+            errors.append(
+                f"depth.sgbm_block_size={bs} must be odd "
+                "(cv2.StereoSGBM requirement)."
+            )
+
     # Appearance extractor
     ap_raw = raw.get("appearance", {})
     ap_type = ap_raw.get("type", "null")
@@ -994,8 +1045,12 @@ def _build(raw: dict) -> PipelineConfig:
         ),
         depth=DepthConfig(
             enabled=bool(de.get("enabled", False)),
+            type=str(de.get("type", "depth_anything")),
             model=str(de.get("model", "ZoeD_N")),
             device=str(de.get("device", "cuda")),
+            sgbm_min_disparity=int(de.get("sgbm_min_disparity", 0)),
+            sgbm_num_disparities=int(de.get("sgbm_num_disparities", 96)),
+            sgbm_block_size=int(de.get("sgbm_block_size", 7)),
         ),
         visualization=VisualizationConfig(
             rerun_enabled=           bool(vis.get("rerun_enabled", True)),

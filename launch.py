@@ -34,7 +34,10 @@ from perception.detector import YOLOv8Detector
 from tracking.tracker import ByteTracker
 from visualization.debug_vis import DebugVisualizer
 from world_model.scene_graph import SceneGraph
-from perception.depth_estimator import DepthAnythingEstimator, NullDepthEstimator
+from perception.depth_estimator import (
+    DepthEstimator, DepthAnythingEstimator, NullDepthEstimator,
+    StereoSGBMDepthEstimator,
+)
 from perception.appearance_extractor import (
     AppearanceExtractor, NullAppearanceExtractor,
 )
@@ -133,16 +136,7 @@ class Pipeline:
             "Detector ready. Mean warmup latency: %.1f ms",
             self._detector.mean_inference_ms,
         )
-        if cfg.depth.enabled:
-            log.info("Loading ZoeDepth model: %s ...", cfg.depth.model)
-            self._depth_estimator = DepthAnythingEstimator(
-                device=cfg.depth.device,
-                model_name=cfg.depth.model,
-            )
-            self._depth_estimator.warmup()
-            log.info("ZoeDepth ready. Latency: %.1f ms", self._depth_estimator.mean_inference_ms)
-        else:
-            self._depth_estimator = NullDepthEstimator()
+        self._depth_estimator = self._build_depth_estimator()
         self._pose_estimator = self._build_pose_estimator(raw)
 
         # Coordinate frame manager. Disabled by default — when enabled,
@@ -173,6 +167,32 @@ class Pipeline:
         self._visualizer = DebugVisualizer(cfg)
         self._visualizer.connect_rerun()
         self._writer     = None
+
+    def _build_depth_estimator(self) -> DepthEstimator:
+        """Factory for DepthEstimator keyed on depth.type."""
+        cfg = self._cfg.depth
+        if not cfg.enabled or cfg.type == "null":
+            return NullDepthEstimator()
+        if cfg.type == "depth_anything":
+            log.info("Loading Depth Anything V2: %s ...", cfg.model)
+            est = DepthAnythingEstimator(device=cfg.device, model_name=cfg.model)
+            est.warmup()
+            log.info("Depth Anything V2 ready. Latency: %.1f ms",
+                     est.mean_inference_ms)
+            return est
+        if cfg.type == "stereo_sgbm":
+            log.info(
+                "Building StereoSGBMDepthEstimator (CPU; num_disp=%d, block=%d)",
+                cfg.sgbm_num_disparities, cfg.sgbm_block_size,
+            )
+            est = StereoSGBMDepthEstimator(
+                min_disparity=cfg.sgbm_min_disparity,
+                num_disparities=cfg.sgbm_num_disparities,
+                block_size=cfg.sgbm_block_size,
+            )
+            est.warmup()
+            return est
+        raise ValueError(f"Unknown depth.type={cfg.type!r}")
 
     def _build_health_monitor(self) -> HealthMonitor:
         """Construct a HealthMonitor with stages from config."""

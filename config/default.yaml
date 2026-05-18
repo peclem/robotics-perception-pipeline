@@ -183,5 +183,15 @@ benchmark:
   output_dir: data/benchmark_results
 depth:
   enabled: false
+  # Backend selection: 'null' | 'depth_anything' | 'stereo_sgbm'.
+  # Set enabled=true and pick a type. enabled=false keeps NullDepthEstimator
+  # regardless of type (backwards-compat master switch).
+  type: depth_anything
   model: depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf
   device: cuda
+  # Classical stereo SGBM tunables — only consulted when type='stereo_sgbm'.
+  # Needs frames carrying right_image + intrinsics.baseline_m > 0
+  # (e.g. SyntheticCamera with stereo_baseline_m, or a real stereo source).
+  sgbm_min_disparity: 0
+  sgbm_num_disparities: 96      # must be divisible by 16
+  sgbm_block_size: 7            # must be odd
