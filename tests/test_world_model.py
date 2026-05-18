@@ -299,6 +299,102 @@ class TestSceneGraphUpdate:
 
 
 # ---------------------------------------------------------------------------
+# TestSceneGraphSemanticRefinement
+# ---------------------------------------------------------------------------
+
+class TestSceneGraphSemanticRefinement:
+    """
+    Stability refinement using SemanticMask sampled at the object's
+    centroid. Rule under test:
+        new = min(current_stability, semantic_class_stability(centroid))
+    Only demotes (toward DYNAMIC), never promotes.
+    """
+
+    def _mask(self, h, w, fill_class_id, names):
+        from perception.semantic_segmenter import SemanticMask
+        return SemanticMask(
+            mask=np.full((h, w), fill_class_id, dtype=np.int32),
+            class_names=names,
+            dataset="cityscapes",
+            timestamp=0.0, frame_idx=0,
+        )
+
+    def test_no_demotion_when_centroid_class_more_static(self, cfg):
+        from world_model.stability import StabilityClass
+        sg = SceneGraph(cfg)
+        # person track (DYNAMIC) over a mask where every pixel is 'road'
+        # (STATIC). Rule: min(DYNAMIC, STATIC) = DYNAMIC → no change.
+        sm = self._mask(300, 300, 0, {0: "road"})
+        track = make_confirmed_track(cfg, cx=150, cy=150, cls_name="person")
+        sg.update([track], [], timestamp=time.monotonic(), semantic_mask=sm)
+        obj = sg.all_objects()[0]
+        assert obj.stability == StabilityClass.DYNAMIC
+
+    def test_demotion_when_centroid_class_more_dynamic(self, cfg):
+        from world_model.stability import StabilityClass
+        sg = SceneGraph(cfg)
+        # chair track (STATIC by COCO prior) whose centroid lands on a
+        # 'person' pixel — surface stability = DYNAMIC. Rule:
+        # min(STATIC, DYNAMIC) = DYNAMIC → demoted.
+        sm = self._mask(300, 300, 11, {11: "person"})
+        track = make_confirmed_track(cfg, cx=150, cy=150, cls_name="chair")
+        sg.update([track], [], timestamp=time.monotonic(), semantic_mask=sm)
+        obj = sg.all_objects()[0]
+        assert obj.stability == StabilityClass.DYNAMIC
+
+    def test_partial_demotion_to_semi_static(self, cfg):
+        from world_model.stability import StabilityClass
+        sg = SceneGraph(cfg)
+        # chair (STATIC) on a 'car' (SEMI_STATIC) surface — demote to
+        # SEMI_STATIC, not all the way to DYNAMIC.
+        sm = self._mask(300, 300, 13, {13: "car"})
+        track = make_confirmed_track(cfg, cx=150, cy=150, cls_name="chair")
+        sg.update([track], [], timestamp=time.monotonic(), semantic_mask=sm)
+        obj = sg.all_objects()[0]
+        assert obj.stability == StabilityClass.SEMI_STATIC
+
+    def test_no_promotion(self, cfg):
+        from world_model.stability import StabilityClass
+        sg = SceneGraph(cfg)
+        # person (DYNAMIC) over a 'building' (STATIC) mask. Promotion
+        # is disallowed regardless of the surface — should stay DYNAMIC.
+        sm = self._mask(300, 300, 2, {2: "building"})
+        track = make_confirmed_track(cfg, cx=150, cy=150, cls_name="person")
+        sg.update([track], [], timestamp=time.monotonic(), semantic_mask=sm)
+        obj = sg.all_objects()[0]
+        assert obj.stability == StabilityClass.DYNAMIC
+
+    def test_centroid_out_of_bounds_is_noop(self, cfg):
+        from world_model.stability import StabilityClass
+        sg = SceneGraph(cfg)
+        # 100x100 mask but track sits at (500, 500). class_at returns None.
+        sm = self._mask(100, 100, 11, {11: "person"})
+        track = make_confirmed_track(cfg, cx=500, cy=500, cls_name="chair")
+        sg.update([track], [], timestamp=time.monotonic(), semantic_mask=sm)
+        obj = sg.all_objects()[0]
+        assert obj.stability == StabilityClass.STATIC  # unchanged
+
+    def test_unknown_centroid_class_id_is_noop(self, cfg):
+        from world_model.stability import StabilityClass
+        sg = SceneGraph(cfg)
+        # mask says class id 99 everywhere; class_names doesn't include 99.
+        sm = self._mask(300, 300, 99, {0: "road"})
+        track = make_confirmed_track(cfg, cx=150, cy=150, cls_name="chair")
+        sg.update([track], [], timestamp=time.monotonic(), semantic_mask=sm)
+        obj = sg.all_objects()[0]
+        assert obj.stability == StabilityClass.STATIC
+
+    def test_no_mask_passed_is_noop(self, cfg):
+        """Default semantic_mask=None must not alter behaviour."""
+        from world_model.stability import StabilityClass
+        sg = SceneGraph(cfg)
+        track = make_confirmed_track(cfg, cx=150, cy=150, cls_name="chair")
+        sg.update([track], [], timestamp=time.monotonic())
+        obj = sg.all_objects()[0]
+        assert obj.stability == StabilityClass.STATIC
+
+
+# ---------------------------------------------------------------------------
 # TestSceneGraphQuery
 # ---------------------------------------------------------------------------
 

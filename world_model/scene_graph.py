@@ -167,6 +167,7 @@ class SceneGraph:
         depth_estimates:  Optional[dict] = None,
         camera_pose=None,
         appearance_embeddings: Optional[dict] = None,
+        semantic_mask=None,
     ) -> None:
         """
         Synchronise the scene graph with the current tracker state.
@@ -176,6 +177,9 @@ class SceneGraph:
         confirmed_tracks : CONFIRMED tracks from ByteTracker.update()
         lost_tracks      : LOST tracks from ByteTracker.lost_tracks
         timestamp        : monotonic timestamp of the current frame
+        semantic_mask    : optional SemanticMask (perception.semantic_segmenter).
+                           When provided, the stability of each confirmed
+                           object is refined per `_apply_semantic_refinement`.
 
         Algorithm
         ---------
@@ -194,7 +198,7 @@ class SceneGraph:
             self._upsert(
                 track, timestamp, is_lost=False,
                 depth_estimate=est, camera_pose=camera_pose,
-                embedding=emb,
+                embedding=emb, semantic_mask=semantic_mask,
             )
             confirmed_ids.add(track.track_id)
 
@@ -218,6 +222,7 @@ class SceneGraph:
         camera_pose=None,
         depth_estimate: Optional["DepthEstimate"] = None,
         embedding: Optional[np.ndarray] = None,
+        semantic_mask=None,
     ) -> None:
         """Create or update the ObjectState for a track."""
         snap = track.kf.snapshot(timestamp=timestamp, frame_idx=self._frame_count)
@@ -263,6 +268,8 @@ class SceneGraph:
         # Skip while lost — KF predictions don't reflect observed motion.
         if not is_lost:
             self._update_stability(obj)
+            if semantic_mask is not None:
+                self._apply_semantic_refinement(obj, semantic_mask)
 
         if depth_estimate is not None and depth_estimate.position_3d is not None:
             obj.position_3d = depth_estimate.position_3d.copy()
@@ -361,6 +368,56 @@ class SceneGraph:
                     obj._stationary_frames = 0
             else:
                 obj._stationary_frames = 0
+
+    def _apply_semantic_refinement(self, obj: ObjectState, sm) -> None:
+        """
+        Refine stability using the semantic-segmentation class at the
+        object's centroid pixel.
+
+        Rule: take the MORE DYNAMIC of (current stability, semantic
+        prior at the centroid). Concretely:
+
+            new = min(obj.stability, semantic_class_stability(centroid_class))
+
+        Since StabilityClass values are ordered DYNAMIC=0 < SEMI_STATIC=1
+        < STATIC=2, `min` selects "if either signal says it moves, it
+        moves". This is deliberately conservative: better to over-forget
+        an object than to keep believing in stale state.
+
+        Cases worth tracing:
+          * Centroid lands on the object's own class (e.g. detected
+            person on person-pixel) → semantic prior == COCO prior →
+            no change. Tautology, harmless.
+          * Detected chair (STATIC) whose centroid lands on a 'person'
+            mask blob (likely being held/displaced) → demoted to
+            DYNAMIC. Intended outcome.
+          * Centroid pixel out of bounds, or its class isn't in the
+            segmenter's vocabulary → silent no-op.
+
+        Promotion is NOT performed here — the SceneGraph's own motion
+        override is the only path that promotes DYNAMIC → SEMI_STATIC,
+        because surface evidence is a much weaker signal than observed
+        stillness.
+        """
+        # Import locally to avoid coupling world_model → perception at
+        # module import time. SceneGraph runs fine without the segmenter.
+        from perception.semantic_segmenter import semantic_class_stability
+
+        # Object's centroid in pixel space (ObjectState.position is [cx, cy]).
+        u = int(round(float(obj.position[0])))
+        v = int(round(float(obj.position[1])))
+        name = sm.class_at(u, v)
+        if name is None:
+            return
+        sem_stab = semantic_class_stability(name, sm.dataset)
+        if sem_stab < obj.stability:
+            log.debug(
+                "SceneGraph: id=%d (%s) %s → %s "
+                "(semantic centroid='%s')",
+                obj.track_id, obj.class_name,
+                obj.stability.name, sem_stab.name, name,
+            )
+            obj.stability = sem_stab
 
     def _prune(self, now: float) -> None:
         """

@@ -412,12 +412,17 @@ class HealthMonitorConfig:
     log_period_s:      float               = 5.0
     stage_budgets_ms:  Dict[str, float]    = field(default_factory=lambda: {
         # Defaults tuned for a 30 Hz pipeline (33.3 ms total budget).
+        # `semantic` is generous (40 ms) because Mask2Former-Swin-T
+        # alone consumes most of a 30 Hz frame budget — when it's
+        # enabled the pipeline is effectively running slower; the
+        # budget acknowledges that rather than spamming WARNs.
         "detector":   12.0,
         "depth":      20.0,
         "pose":       25.0,
         "tracker":    3.0,
         "scene_graph": 5.0,
         "appearance": 15.0,
+        "semantic":   40.0,
         "frame_total": 40.0,
     })
 

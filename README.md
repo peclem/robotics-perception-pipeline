@@ -63,6 +63,9 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] Semantic segmentation    Mask2Former (Swin-T, Cityscapes), ║
     ║                               drivable_mask + class-stability  ║
     ║                               helpers. ABC + Null fallback.    ║
+    ║                               Wired into launch.py with        ║
+    ║                               per-frame stage + SceneGraph     ║
+    ║                               stability refinement.            ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
@@ -639,7 +642,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               595 unit tests — all hardware-free; integration
+    tests/               602 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 

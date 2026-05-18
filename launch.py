@@ -41,6 +41,9 @@ from perception.depth_estimator import (
 from perception.appearance_extractor import (
     AppearanceExtractor, NullAppearanceExtractor,
 )
+from perception.semantic_segmenter import (
+    SemanticSegmenter, NullSemanticSegmenter,
+)
 from perception.health_monitor import HealthMonitor, HealthStatus
 from world_model.world_map import WorldMap
 from perception.pose_estimator import NullPoseEstimator, CameraPose
@@ -150,6 +153,7 @@ class Pipeline:
         # Both opt-in; default config keeps them off so existing
         # deployments are unaffected.
         self._appearance_extractor = self._build_appearance_extractor()
+        self._semantic_segmenter = self._build_semantic_segmenter()
         self._world_map = self._build_world_map()
 
         # Health monitor: per-stage latency budgets + degraded-mode
@@ -229,6 +233,26 @@ class Pipeline:
             return ext
         raise ValueError(
             f"Unknown appearance.type={ap_type!r}. Supported: 'null', 'dinov2'."
+        )
+
+    def _build_semantic_segmenter(self) -> SemanticSegmenter:
+        """Factory for SemanticSegmenter keyed on semantic.type / .enabled."""
+        cfg = self._cfg.semantic
+        if not cfg.enabled or cfg.type == "null":
+            return NullSemanticSegmenter()
+        if cfg.type == "mask2former":
+            from perception.semantic_segmenter import (
+                Mask2FormerSemanticSegmenter,
+            )
+            seg = Mask2FormerSemanticSegmenter(
+                device=cfg.device, model_name=cfg.model, dataset=cfg.dataset,
+            )
+            seg.warmup()
+            log.info("SemanticSegmenter: Mask2Former on %s (dataset=%s)",
+                     cfg.device, cfg.dataset)
+            return seg
+        raise ValueError(
+            f"Unknown semantic.type={cfg.type!r}. Supported: 'null', 'mask2former'."
         )
 
     def _build_world_map(self) -> Optional[WorldMap]:
@@ -404,6 +428,15 @@ class Pipeline:
                     for tr, emb in zip(confirmed_tracks, embs):
                         appearance_map[tr.track_id] = emb
 
+            # Semantic segmentation — feeds SceneGraph stability refinement.
+            # Skip the work entirely when the backend is the Null one;
+            # NullSemanticSegmenter would return None anyway, but the
+            # HealthMonitor stage entry would still account a frame budget.
+            semantic_mask = None
+            if not isinstance(self._semantic_segmenter, NullSemanticSegmenter):
+                with self._health.stage("semantic"):
+                    semantic_mask = self._semantic_segmenter.segment(frame)
+
             with self._health.stage("scene_graph"):
                 self._scene_graph.update(
                     confirmed_tracks=confirmed_tracks,
@@ -412,6 +445,7 @@ class Pipeline:
                     depth_estimates=depth_map,
                     appearance_embeddings=appearance_map,
                     camera_pose=camera_pose,
+                    semantic_mask=semantic_mask,
                 )
 
             annotated = self._visualizer.draw(

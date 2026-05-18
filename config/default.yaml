@@ -186,6 +186,7 @@ health_monitor:
     tracker:     3.0
     scene_graph: 5.0
     appearance:  15.0
+    semantic:    40.0       # Mask2Former-Swin-T baseline; ignored when null
     frame_total: 40.0
 occupancy_grid:
   enabled: false            # publish nav_msgs/OccupancyGrid from the scene graph
