@@ -503,6 +503,30 @@ class OccupancyGridConfig:
 
 
 @dataclass
+class RoomLayerConfigCfg:
+    """
+    Typed mirror of world_model.room_layer.RoomLayerConfig. Defaults
+    match the standalone module's defaults.
+
+    enabled
+        Master switch for the room layer. v1 doesn't have live-pipeline
+        wiring yet (matches the VIO EKF discipline) — when the wiring
+        lands, this flag will gate it.
+    erosion_m
+        Half the maximum doorway width that should be closed during
+        room separation. Tune for your environment: residential ~0.45,
+        warehouse ~0.6, narrow apartment ~0.3.
+    """
+    enabled:            bool  = False
+    erosion_m:          float = 0.45
+    min_area_m2:        float = 1.0
+    polygon_simplify_m: float = 0.05
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class Occupancy3DConfig:
     """
     Sparse 3D obstacle grid parameters. See world_model.Occupancy3DParams
@@ -646,6 +670,7 @@ class PipelineConfig:
     pose_estimator:         PoseEstimatorConfig        = field(default_factory=PoseEstimatorConfig)
     occupancy_grid:         OccupancyGridConfig        = field(default_factory=OccupancyGridConfig)
     occupancy_3d:           Occupancy3DConfig          = field(default_factory=Occupancy3DConfig)
+    room_layer:             RoomLayerConfigCfg         = field(default_factory=RoomLayerConfigCfg)
     appearance:             AppearanceConfig           = field(default_factory=AppearanceConfig)
     world_map:              WorldMapConfig             = field(default_factory=WorldMapConfig)
     health_monitor:         HealthMonitorConfig        = field(default_factory=HealthMonitorConfig)
@@ -677,6 +702,7 @@ class PipelineConfig:
             "pose_estimator":         self.pose_estimator.as_dict(),
             "occupancy_grid":         self.occupancy_grid.as_dict(),
             "occupancy_3d":           self.occupancy_3d.as_dict(),
+            "room_layer":             self.room_layer.as_dict(),
             "appearance":             self.appearance.as_dict(),
             "world_map":              self.world_map.as_dict(),
             "health_monitor":         self.health_monitor.as_dict(),
@@ -1058,6 +1084,12 @@ def _validate(raw: dict) -> None:
     _require_positive_float(errors, o3_raw, "occupancy_3d.default_inflation_m")
     _require_positive_float(errors, o3_raw, "occupancy_3d.min_inflation_m")
 
+    # Room layer
+    rl_raw = raw.get("room_layer", {})
+    _require_positive_float(errors, rl_raw, "room_layer.erosion_m")
+    _require_positive_float(errors, rl_raw, "room_layer.min_area_m2")
+    _require_positive_float(errors, rl_raw, "room_layer.polygon_simplify_m")
+
     # Visualization
     vis = raw.get("visualization", {})
     vas = vis.get("velocity_arrow_scale", 0.5)
@@ -1098,6 +1130,7 @@ def _build(raw: dict) -> PipelineConfig:
     pe = raw.get("pose_estimator", {})
     og = raw.get("occupancy_grid", {})
     o3 = raw.get("occupancy_3d",   {})
+    rl = raw.get("room_layer",     {})
     ap = raw.get("appearance", {})
     wmap = raw.get("world_map", {})
     hm = raw.get("health_monitor", {})
@@ -1282,6 +1315,12 @@ def _build(raw: dict) -> PipelineConfig:
                 str(k): float(v) for k, v in
                 (o3.get("per_class_inflation_m") or {}).items()
             } or Occupancy3DConfig().per_class_inflation_m,
+        ),
+        room_layer=RoomLayerConfigCfg(
+            enabled=            bool(rl.get("enabled", False)),
+            erosion_m=          float(rl.get("erosion_m",          0.45)),
+            min_area_m2=        float(rl.get("min_area_m2",        1.0)),
+            polygon_simplify_m= float(rl.get("polygon_simplify_m", 0.05)),
         ),
         appearance=AppearanceConfig(
             type=   str(ap.get("type", "null")),

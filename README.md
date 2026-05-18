@@ -112,6 +112,11 @@ marked. Unimplemented components and their integration points are identified.
     ║                               sensor_msgs/PointCloud2           ║
     ║                               (always) + octomap_msgs/Octomap   ║
     ║                               (when octomap+_msgs installed)    ║
+    ║  [✓] Room layer (3D scene-    Morphological-erosion clustering  ║
+    ║      graph hierarchy)         on occupancy → labelled polygons  ║
+    ║                               with object membership. v1 is     ║
+    ║                               stateless per frame; persistent   ║
+    ║                               room tracking deferred.           ║
     ║  [✓] Per-class spatial memory STATIC / SEMI_STATIC / DYNAMIC    ║
     ║                               classification (class prior +     ║
     ║                               motion override). STATIC objects  ║
@@ -647,7 +652,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               619 unit tests — all hardware-free; integration
+    tests/               639 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 

@@ -210,6 +210,15 @@ occupancy_grid:
     motorcycle: 0.80
     bus:        3.00
     truck:      2.50
+room_layer:
+  # Top-of-graph room hierarchy. Consumes the 2D occupancy grid +
+  # objects with position_world and produces a per-frame list of
+  # Room polygons. v1 is stateless across frames (room IDs reshuffle
+  # when geometry changes) — persistent room tracking deferred.
+  enabled: false
+  erosion_m: 0.45             # closes doorways up to 0.9 m wide
+  min_area_m2: 1.0            # discard components smaller than this
+  polygon_simplify_m: 0.05    # cv2.approxPolyDP tolerance
 occupancy_3d:
   enabled: false            # publish sparse 3D voxels (PointCloud2 + optional Octomap)
   resolution_m: 0.10        # 10 cm per voxel; smaller → more memory + bigger PointCloud2
