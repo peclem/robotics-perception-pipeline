@@ -61,8 +61,10 @@ marked. Unimplemented components and their integration points are identified.
     ║                               covariance + bias Jacobians.      ║
     ║  [✓] VIO fuser                Error-state EKF (15-D), Joseph    ║
     ║                               update; consumes preint + visual  ║
-    ║                               pose. Loose coupling, no live     ║
-    ║                               pipeline wiring yet.              ║
+    ║                               pose. Loose coupling.             ║
+    ║  [✓] VIO live orchestration   VIOPoseEstimator wraps visual +   ║
+    ║                               IMU behind PoseEstimator ABC.     ║
+    ║                               vio.enabled flag in config.       ║
     ║  [✓] Semantic segmentation    Mask2Former (Swin-T, Cityscapes), ║
     ║                               drivable_mask + class-stability  ║
     ║                               helpers. ABC + Null fallback.    ║
@@ -695,7 +697,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               645 unit tests — all hardware-free; integration
+    tests/               655 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 
