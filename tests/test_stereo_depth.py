@@ -366,3 +366,105 @@ class TestDepthConfigWiring:
         assert cfg.depth.type == "depth_anything"
         assert cfg.depth.sgbm_num_disparities == 96
         assert cfg.depth.sgbm_block_size == 7
+
+    def test_type_raft_stereo_returns_raft_estimator(self):
+        from perception.depth_estimator import RAFTStereoDepthEstimator
+        pipe = self._make_pipeline({
+            "enabled": True, "type": "raft_stereo",
+            # Point at a path that definitely doesn't exist; estimator
+            # should construct (graceful fallback) and report not-ready.
+            "raft_repo_dir":   "third_party/_nope",
+            "raft_checkpoint": "third_party/_nope/weights.pth",
+        })
+        est = pipe._build_depth_estimator()
+        assert isinstance(est, RAFTStereoDepthEstimator)
+        assert not est.is_ready
+
+    def test_config_validation_rejects_zero_raft_iters(self, tmp_path):
+        from perception.config_loader import (
+            load_config, ConfigValidationError,
+        )
+        p = tmp_path / "bad.yaml"
+        p.write_text(
+            "pipeline: {}\ncamera: {}\ndetector: {}\ntracker: {}\n"
+            "kalman_filter: {}\nvisualization: {}\n"
+            "depth: {raft_iters: 0}\n"
+        )
+        with pytest.raises(ConfigValidationError, match="raft_iters"):
+            load_config(p)
+
+
+# ---------------------------------------------------------------------------
+# RAFT-Stereo wrapper — graceful-degradation contract
+# ---------------------------------------------------------------------------
+
+class TestRAFTStereoGraceful:
+    """
+    The RAFT-Stereo wrapper must construct, warm up, and segment without
+    raising even when the repo / weights aren't on disk (the common case
+    until the user clones princeton-vl/RAFT-Stereo). All branches must
+    fall back to zero-depth.
+    """
+
+    def _intr(self, baseline_m=0.1):
+        return CameraIntrinsics(
+            fx=500.0, fy=500.0, cx=320.0, cy=240.0,
+            width=640, height=480, dist_coeffs=np.zeros(5),
+            baseline_m=baseline_m,
+        )
+
+    def _frame(self, with_right=True):
+        intr = self._intr()
+        left = np.zeros((480, 640, 3), dtype=np.uint8)
+        return CameraFrame(
+            image=left, timestamp=0.0, frame_idx=0,
+            intrinsics=intr, source_id="test",
+            right_image=(left.copy() if with_right else None),
+        )
+
+    def _det(self, cx=320, cy=240) -> Detection:
+        return Detection(
+            bbox_xyxy=np.array([cx-10, cy-10, cx+10, cy+10], dtype=np.float32),
+            confidence=0.9, class_id=0, class_name="person",
+            frame_idx=0, timestamp=0.0,
+        )
+
+    def test_construct_no_repo_does_not_raise(self):
+        from perception.depth_estimator import RAFTStereoDepthEstimator
+        est = RAFTStereoDepthEstimator(
+            repo_dir="third_party/_nope",
+            checkpoint="third_party/_nope/weights.pth",
+        )
+        assert not est.is_ready
+        assert est.mean_inference_ms == 0.0
+
+    def test_estimate_returns_zeros_when_not_ready(self):
+        from perception.depth_estimator import RAFTStereoDepthEstimator
+        est = RAFTStereoDepthEstimator(
+            repo_dir="third_party/_nope",
+            checkpoint="third_party/_nope/weights.pth",
+        )
+        out = est.estimate(self._frame(), [self._det(), self._det()])
+        assert len(out) == 2
+        assert all(o.depth_m == 0.0 and o.position_3d is None for o in out)
+
+    def test_warmup_does_nothing_when_not_ready(self):
+        from perception.depth_estimator import RAFTStereoDepthEstimator
+        est = RAFTStereoDepthEstimator(
+            repo_dir="third_party/_nope",
+            checkpoint="third_party/_nope/weights.pth",
+        )
+        est.warmup()  # must not raise
+
+    def test_missing_right_image_returns_zeros_even_if_ready(self, monkeypatch):
+        from perception.depth_estimator import RAFTStereoDepthEstimator
+        est = RAFTStereoDepthEstimator(
+            repo_dir="third_party/_nope",
+            checkpoint="third_party/_nope/weights.pth",
+        )
+        # Force "ready" so we hit the right_image=None guard rather than
+        # the unloaded-model guard. The model itself isn't used because
+        # we exit before calling forward.
+        monkeypatch.setattr(est, "_ready", True)
+        out = est.estimate(self._frame(with_right=False), [self._det()])
+        assert out[0].depth_m == 0.0

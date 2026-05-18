@@ -36,7 +36,7 @@ from visualization.debug_vis import DebugVisualizer
 from world_model.scene_graph import SceneGraph
 from perception.depth_estimator import (
     DepthEstimator, DepthAnythingEstimator, NullDepthEstimator,
-    StereoSGBMDepthEstimator,
+    StereoSGBMDepthEstimator, RAFTStereoDepthEstimator,
 )
 from perception.appearance_extractor import (
     AppearanceExtractor, NullAppearanceExtractor,
@@ -193,6 +193,19 @@ class Pipeline:
                 min_disparity=cfg.sgbm_min_disparity,
                 num_disparities=cfg.sgbm_num_disparities,
                 block_size=cfg.sgbm_block_size,
+            )
+            est.warmup()
+            return est
+        if cfg.type == "raft_stereo":
+            log.info(
+                "Building RAFTStereoDepthEstimator (GPU; iters=%d, repo=%s)",
+                cfg.raft_iters, cfg.raft_repo_dir,
+            )
+            est = RAFTStereoDepthEstimator(
+                repo_dir=cfg.raft_repo_dir,
+                checkpoint=cfg.raft_checkpoint,
+                device=cfg.device,
+                iters=cfg.raft_iters,
             )
             est.warmup()
             return est

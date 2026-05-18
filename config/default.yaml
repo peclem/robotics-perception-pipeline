@@ -244,7 +244,7 @@ benchmark:
   output_dir: data/benchmark_results
 depth:
   enabled: false
-  # Backend selection: 'null' | 'depth_anything' | 'stereo_sgbm'.
+  # Backend selection: 'null' | 'depth_anything' | 'stereo_sgbm' | 'raft_stereo'.
   # Set enabled=true and pick a type. enabled=false keeps NullDepthEstimator
   # regardless of type (backwards-compat master switch).
   type: depth_anything
@@ -256,3 +256,8 @@ depth:
   sgbm_min_disparity: 0
   sgbm_num_disparities: 96      # must be divisible by 16
   sgbm_block_size: 7            # must be odd
+  # RAFT-Stereo (neural). Requires the repo cloned into raft_repo_dir
+  # and weights at raft_checkpoint. See README → 'RAFT-Stereo setup'.
+  raft_repo_dir:   third_party/RAFT-Stereo
+  raft_checkpoint: third_party/RAFT-Stereo/models/raftstereo-middlebury.pth
+  raft_iters:      16           # RAFT iteration count; published default

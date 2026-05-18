@@ -285,6 +285,10 @@ class DepthConfig:
         'depth_anything' — DepthAnythingEstimator (monocular metric, GPU)
         'stereo_sgbm'    — StereoSGBMDepthEstimator (classical, CPU,
                            needs CameraFrame.right_image + intrinsics.baseline_m)
+        'raft_stereo'    — RAFTStereoDepthEstimator (neural stereo, GPU,
+                           same input contract as stereo_sgbm). Requires
+                           the RAFT-Stereo repo cloned into
+                           `raft_repo_dir` and weights at `raft_checkpoint`.
         'null'           — NullDepthEstimator (no depth)
 
     enabled
@@ -293,6 +297,7 @@ class DepthConfig:
         can equivalently set `type: null`.
 
     SGBM tunables (only used when type == 'stereo_sgbm')
+    RAFT-Stereo tunables (only used when type == 'raft_stereo')
     """
     enabled: bool = False
     type:    str  = "depth_anything"
@@ -301,6 +306,11 @@ class DepthConfig:
     sgbm_min_disparity:   int = 0
     sgbm_num_disparities: int = 96   # must be divisible by 16
     sgbm_block_size:      int = 7    # must be odd
+    # RAFT-Stereo (neural stereo). Defaults assume the repo is cloned
+    # into third_party/RAFT-Stereo with the middlebury checkpoint.
+    raft_repo_dir:   str = "third_party/RAFT-Stereo"
+    raft_checkpoint: str = "third_party/RAFT-Stereo/models/raftstereo-middlebury.pth"
+    raft_iters:      int = 16
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -974,11 +984,17 @@ def _validate(raw: dict) -> None:
     # Depth estimator
     de_raw = raw.get("depth", {})
     de_type = de_raw.get("type", "depth_anything")
-    if de_type not in ("null", "depth_anything", "stereo_sgbm"):
+    if de_type not in ("null", "depth_anything", "stereo_sgbm", "raft_stereo"):
         errors.append(
             f"depth.type={de_type!r} is invalid. "
-            "Supported: 'null', 'depth_anything', 'stereo_sgbm'."
+            "Supported: 'null', 'depth_anything', 'stereo_sgbm', 'raft_stereo'."
         )
+    raft_iters = de_raw.get("raft_iters")
+    if raft_iters is not None:
+        if not isinstance(raft_iters, int) or raft_iters <= 0:
+            errors.append(
+                f"depth.raft_iters={raft_iters!r} must be a positive int."
+            )
     num_disp = de_raw.get("sgbm_num_disparities")
     if num_disp is not None:
         if not isinstance(num_disp, int) or num_disp <= 0:
@@ -1247,6 +1263,11 @@ def _build(raw: dict) -> PipelineConfig:
             sgbm_min_disparity=int(de.get("sgbm_min_disparity", 0)),
             sgbm_num_disparities=int(de.get("sgbm_num_disparities", 96)),
             sgbm_block_size=int(de.get("sgbm_block_size", 7)),
+            raft_repo_dir=  str(de.get("raft_repo_dir",
+                                       "third_party/RAFT-Stereo")),
+            raft_checkpoint=str(de.get("raft_checkpoint",
+                "third_party/RAFT-Stereo/models/raftstereo-middlebury.pth")),
+            raft_iters=     int(de.get("raft_iters", 16)),
         ),
         visualization=VisualizationConfig(
             rerun_enabled=           bool(vis.get("rerun_enabled", True)),

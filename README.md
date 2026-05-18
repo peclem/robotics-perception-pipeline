@@ -51,7 +51,8 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] Monocular depth          Depth Anything V2, metric         ║
     ║  [✓] Monocular ego-pose       DPVO (deep patch VO), 15 Hz       ║
     ║  [ ] ReID embeddings          OSNet, IoU + cosine cost          ║
-    ║  [✓] Stereo depth             StereoSGBMDepthEstimator          ║
+    ║  [✓] Stereo depth             Classical (cv2.StereoSGBM) +      ║
+    ║                               neural (RAFT-Stereo, optional)    ║
     ║                               (cv2.StereoSGBM). Drop-in under   ║
     ║                               the existing DepthEstimator ABC.  ║
     ║                               Neural backend (IGEV / Foundation- ║
@@ -375,6 +376,48 @@ Then set `pose_estimator.type: dpvo` in config/default.yaml.
 
 ---
 
+## RAFT-Stereo setup (optional, for `depth.type: raft_stereo`)
+
+RAFT-Stereo (Princeton-VL, 3DV 2021) is the neural-stereo backend
+alongside the classical `stereo_sgbm`. Pure PyTorch — no custom CUDA
+extensions to compile, unlike DPVO or IGEV-Stereo. Install is just a
+clone + weights download.
+
+    # 1. Clone the upstream repo
+    cd third_party
+    git clone https://github.com/princeton-vl/RAFT-Stereo.git
+    cd RAFT-Stereo
+
+    # 2. Download the published checkpoints (~100 MB total)
+    bash download_models.sh
+
+    # 3. (optional) RAFT-Stereo brings a couple of pip deps you may
+    # not have yet
+    pip install opt_einsum
+
+Verify:
+
+    python3 -c "from perception.depth_estimator import \
+        RAFTStereoDepthEstimator; \
+        e = RAFTStereoDepthEstimator(); print('ready =', e.is_ready)"
+
+Then set in config/default.yaml:
+
+    depth:
+      enabled: true
+      type: raft_stereo
+
+The default checkpoint `raftstereo-middlebury.pth` is the strongest
+generalist on indoor scenes. For outdoor low-texture, use
+`raftstereo-eth3d.pth`; for sub-10 ms inference, use
+`raftstereo-realtime.pth`. Wire via `depth.raft_checkpoint`.
+
+If the load fails for any reason (missing repo, upstream API drift,
+state-dict mismatch), the wrapper logs a warning and falls back to
+zero depth — the rest of the pipeline keeps running.
+
+---
+
 ## ROS2 integration
 
 Standalone Python pipeline AND a parallel ROS2 graph. Same modules
@@ -652,7 +695,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               639 unit tests — all hardware-free; integration
+    tests/               645 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 
