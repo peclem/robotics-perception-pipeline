@@ -44,6 +44,13 @@ from perception.appearance_extractor import (
 from perception.semantic_segmenter import (
     SemanticSegmenter, NullSemanticSegmenter,
 )
+from world_model.occupancy_grid import (
+    OccupancyGridBuilder, OccupancyGridParams,
+)
+from world_model.occupancy_3d import (
+    Occupancy3DBuilder, Occupancy3DParams,
+)
+from world_model.room_layer import RoomLayer, RoomLayerConfig
 from perception.health_monitor import HealthMonitor, HealthStatus
 from world_model.world_map import WorldMap
 from perception.pose_estimator import NullPoseEstimator, CameraPose
@@ -158,6 +165,11 @@ class Pipeline:
         self._appearance_extractor = self._build_appearance_extractor()
         self._semantic_segmenter = self._build_semantic_segmenter()
         self._world_map = self._build_world_map()
+        # Spatial-memory hierarchy layers — None when their config flag
+        # is off; the per-frame loop checks for None and skips the work.
+        self._occupancy_grid_builder = self._build_occupancy_grid_builder()
+        self._occupancy_3d_builder   = self._build_occupancy_3d_builder()
+        self._room_layer             = self._build_room_layer()
 
         # Health monitor: per-stage latency budgets + degraded-mode
         # signalling. Always built (cheap); reporting is enabled when
@@ -213,6 +225,51 @@ class Pipeline:
             est.warmup()
             return est
         raise ValueError(f"Unknown depth.type={cfg.type!r}")
+
+    def _build_occupancy_grid_builder(self) -> Optional[OccupancyGridBuilder]:
+        """
+        2D obstacle grid. Built when occupancy_grid.enabled OR
+        room_layer.enabled (rooms need the 2D grid as input).
+        """
+        og = self._cfg.occupancy_grid
+        if not (og.enabled or self._cfg.room_layer.enabled):
+            return None
+        params = OccupancyGridParams(
+            resolution_m=og.resolution_m,
+            size_x_m=og.size_x_m, size_y_m=og.size_y_m,
+            origin_x_m=og.origin_x_m, origin_y_m=og.origin_y_m,
+            default_inflation_m=og.default_inflation_m,
+            min_inflation_m=og.min_inflation_m,
+            per_class_inflation_m=dict(og.per_class_inflation_m),
+        )
+        return OccupancyGridBuilder(params, intrinsics=None)
+
+    def _build_occupancy_3d_builder(self) -> Optional[Occupancy3DBuilder]:
+        """Sparse 3D voxel grid. Built when occupancy_3d.enabled."""
+        o3 = self._cfg.occupancy_3d
+        if not o3.enabled:
+            return None
+        params = Occupancy3DParams(
+            resolution_m=o3.resolution_m,
+            size_x_m=o3.size_x_m, size_y_m=o3.size_y_m, size_z_m=o3.size_z_m,
+            origin_x_m=o3.origin_x_m, origin_y_m=o3.origin_y_m,
+            origin_z_m=o3.origin_z_m,
+            default_inflation_m=o3.default_inflation_m,
+            min_inflation_m=o3.min_inflation_m,
+            per_class_inflation_m=dict(o3.per_class_inflation_m),
+        )
+        return Occupancy3DBuilder(params, intrinsics=None)
+
+    def _build_room_layer(self) -> Optional[RoomLayer]:
+        """3D scene-graph room hierarchy. Built when room_layer.enabled."""
+        rl = self._cfg.room_layer
+        if not rl.enabled:
+            return None
+        return RoomLayer(RoomLayerConfig(
+            erosion_m=rl.erosion_m,
+            min_area_m2=rl.min_area_m2,
+            polygon_simplify_m=rl.polygon_simplify_m,
+        ))
 
     def _build_health_monitor(self) -> HealthMonitor:
         """Construct a HealthMonitor with stages from config."""
@@ -542,6 +599,24 @@ class Pipeline:
                     semantic_mask=semantic_mask,
                 )
 
+            # Spatial-memory layers — fed to Rerun for the showcase.
+            # All gated on their own config flags; None when disabled
+            # so the visualizer skips the corresponding draw call.
+            occ_grid_arr = None
+            occ_3d       = None
+            rooms        = None
+            scene_objects = self._scene_graph.all_objects()
+            if self._occupancy_grid_builder is not None:
+                occ_grid_arr = self._occupancy_grid_builder.build(scene_objects)
+            if self._occupancy_3d_builder is not None:
+                occ_3d = self._occupancy_3d_builder.build(scene_objects)
+            if self._room_layer is not None and self._occupancy_grid_builder is not None:
+                self._room_layer.update(
+                    occ_grid_arr, self._occupancy_grid_builder.params,
+                    scene_objects, frame_idx,
+                )
+                rooms = self._room_layer.rooms
+
             annotated = self._visualizer.draw(
                 frame=frame,
                 detections=detections,
@@ -565,6 +640,9 @@ class Pipeline:
                 track_ms=t_track * 1000,
                 fps=fps,
                 n_lost=len(self._tracker.lost_tracks),
+                occupancy_3d=occ_3d,
+                rooms=rooms,
+                semantic_mask=semantic_mask,
             )
 
             t_total = time.monotonic() - t_frame_start

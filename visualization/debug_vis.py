@@ -197,15 +197,22 @@ class DebugVisualizer:
 
     def log_rerun(
         self,
-        frame:      CameraFrame,
-        detections: List[Detection],
-        tracks:     List[Track],
-        detect_ms:  float = 0.0,
-        track_ms:   float = 0.0,
-        fps:        float = 0.0,
-        n_lost:     int   = 0,
+        frame:          CameraFrame,
+        detections:     List[Detection],
+        tracks:         List[Track],
+        detect_ms:      float = 0.0,
+        track_ms:       float = 0.0,
+        fps:            float = 0.0,
+        n_lost:         int   = 0,
+        occupancy_3d=None,
+        rooms=None,
+        semantic_mask=None,
     ) -> None:
-        self._rlog.log_frame(frame, detections, tracks)
+        self._rlog.log_frame(
+            frame, detections, tracks,
+            occupancy_3d=occupancy_3d, rooms=rooms,
+            semantic_mask=semantic_mask,
+        )
         self._rlog.log_metrics(detect_ms, track_ms, fps, n_lost)
 
     def close(self) -> None:

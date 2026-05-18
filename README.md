@@ -418,15 +418,22 @@ writes `data/demo.rrd` + `data/demo.mp4`.
 
 By default: camera image, 2D detection + track boxes, KF velocity
 arrows, 2σ position-covariance ellipses. With the right config
-flags, additionally: per-track persistent_id (WorldMap re-association),
-metric depth, ego-trajectory (DPVO or VIO), and frame-level metrics
-(detector/tracker latency, FPS, lost-track count).
+flags, additionally:
 
-Voxel-cloud + room-polygon rendering in Rerun is **not yet wired**
-— the data is produced by `Occupancy3DBuilder` / `RoomLayer` but
-the Rerun logger doesn't yet visualise them. Deferred to a follow-up
-visualization session; the recording still demonstrates the
-detection / tracking / depth / pose / spatial-memory layers.
+- **`occupancy_3d.enabled: true`** → 3D voxel cloud at
+  `world/occupancy_3d` (Points3D, voxel-sized radii)
+- **`room_layer.enabled: true`** → room polygons + labels at
+  `world/rooms/polygons` + `world/rooms/labels` (LineStrips3D in
+  world XY at z=0)
+- **`semantic.enabled: true` + `type: mask2former`** → per-pixel
+  semantic-class overlay at `world/camera/semantic` (SegmentationImage
+  + AnnotationContext for the class table)
+- Per-track persistent_id (WorldMap re-association), metric depth,
+  ego-trajectory (DPVO or VIO), frame-level metrics (detector /
+  tracker latency, FPS, lost-track count)
+
+Enable everything for a maximal showcase by adding the layer flags
+to your config and running `scripts/record_demo.py` as above.
 
 ---
 
@@ -796,7 +803,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               655 unit tests — all hardware-free; integration
+    tests/               663 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 

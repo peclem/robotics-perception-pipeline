@@ -42,7 +42,7 @@ import colorsys
 import logging
 import math
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
@@ -63,6 +63,17 @@ def _track_colour_rgba(track_id: int) -> tuple[int, int, int, int]:
     hue = (track_id * 37) % 360 / 360.0
     r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 0.95)
     return (int(r * 255), int(g * 255), int(b * 255), 220)
+
+
+def _room_colour_rgba(room_id: int) -> tuple[int, int, int, int]:
+    """
+    Deterministic RGBA colour from room ID, offset on the HSV wheel
+    away from track colours so the two don't collide visually in the
+    Rerun viewer.
+    """
+    hue = ((room_id * 67) + 180) % 360 / 360.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.65, 0.85)
+    return (int(r * 255), int(g * 255), int(b * 255), 180)
 
 
 def _ellipse_points(
@@ -137,6 +148,11 @@ class RerunLogger:
         self._vis   = cfg.visualization
         self._rr    = None
         self._ready = False
+        # Tracks whether a semantic AnnotationContext (class id → name)
+        # has been logged yet. Logged once, statically, when the first
+        # SemanticMask arrives — Rerun's class-table semantics.
+        self._semantic_annotation_logged: bool = False
+        self._semantic_class_signature: Optional[tuple] = None
 
     # ------------------------------------------------------------------
     # Connection
@@ -198,11 +214,21 @@ class RerunLogger:
 
     def log_frame(
         self,
-        frame:      CameraFrame,
-        detections: List[Detection],
-        tracks:     List[Track],
+        frame:          CameraFrame,
+        detections:     List[Detection],
+        tracks:         List[Track],
+        occupancy_3d=None,
+        rooms=None,
+        semantic_mask=None,
     ) -> None:
-        """Log all visual data for one frame."""
+        """
+        Log all visual data for one frame.
+
+        The new optional kwargs (occupancy_3d, rooms, semantic_mask)
+        carry data produced by the corresponding pipeline layers when
+        their config flags are enabled. Pass None to skip — the call
+        is then identical to the original 3-arg form.
+        """
         if not self._ready or self._rr is None:
             return
 
@@ -215,6 +241,15 @@ class RerunLogger:
             self._log_image(rr, frame)
             self._log_detections(rr, detections)
             self._log_tracks(rr, tracks)
+
+            # Optional layers — silently skipped when the corresponding
+            # pipeline feature is disabled (callers pass None).
+            if occupancy_3d is not None:
+                self._log_voxels(rr, occupancy_3d)
+            if rooms is not None:
+                self._log_rooms(rr, rooms)
+            if semantic_mask is not None:
+                self._log_semantic(rr, semantic_mask)
 
         except Exception as exc:
             log.debug("Rerun log_frame error (suppressed): %s", exc)
@@ -348,6 +383,116 @@ class RerunLogger:
                     )
                 except Exception as e:
                     log.debug("NIS log failed track %d: %s", track.track_id, e)
+
+    # ------------------------------------------------------------------
+    # New showcase layers (voxels, rooms, semantic mask)
+    # ------------------------------------------------------------------
+
+    def _log_voxels(self, rr, occupancy_3d) -> None:
+        """
+        Log occupied voxel centres as a 3D point cloud. The point
+        radius is set to half the grid resolution so each voxel renders
+        as roughly its physical size in the Rerun viewer.
+        """
+        centres = occupancy_3d.voxel_centres_world()
+        if centres.shape[0] == 0:
+            try:
+                rr.log("world/occupancy_3d", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+        try:
+            res = float(occupancy_3d.params.resolution_m)
+            rr.log(
+                "world/occupancy_3d",
+                rr.Points3D(
+                    positions=centres.astype(np.float32),
+                    radii=res * 0.5,
+                    colors=[(220, 60, 60, 200)] * centres.shape[0],
+                ),
+            )
+        except Exception as e:
+            log.debug("Voxel log failed: %s", e)
+
+    def _log_rooms(self, rr, rooms) -> None:
+        """
+        Log room polygons as closed line strips in world XY at z=0,
+        plus a Points3D entity carrying the room labels at each
+        centroid. Lifting to 3D matches the voxel-cloud frame so
+        rooms render correctly relative to the 3D occupancy.
+        """
+        if not rooms:
+            try:
+                rr.log("world/rooms", rr.Clear(recursive=True))
+            except Exception:
+                pass
+            return
+        try:
+            strips = []
+            labels = []
+            colors = []
+            centroids = []
+            for r in rooms:
+                # Close the polygon by appending the first vertex at the end.
+                poly = np.concatenate(
+                    [r.polygon_world, r.polygon_world[:1]], axis=0,
+                )
+                strip3d = np.column_stack(
+                    [poly, np.zeros(poly.shape[0])]
+                ).astype(np.float32)
+                strips.append(strip3d)
+                labels.append(r.label)
+                colors.append(_room_colour_rgba(r.room_id))
+                centroids.append([
+                    float(r.centroid[0]), float(r.centroid[1]), 0.1,
+                ])
+            rr.log(
+                "world/rooms/polygons",
+                rr.LineStrips3D(
+                    strips, colors=colors, radii=0.02,
+                ),
+            )
+            rr.log(
+                "world/rooms/labels",
+                rr.Points3D(
+                    positions=np.asarray(centroids, dtype=np.float32),
+                    labels=labels, colors=colors, radii=0.05,
+                ),
+            )
+        except Exception as e:
+            log.debug("Rooms log failed: %s", e)
+
+    def _log_semantic(self, rr, semantic_mask) -> None:
+        """
+        Log the semantic class map as a Rerun SegmentationImage,
+        co-located with the camera image. The class id→name table is
+        logged once via AnnotationContext (Rerun's class-table
+        primitive) and re-logged only if the segmenter swaps to a
+        different vocabulary (e.g. cityscapes → ade20k mid-run).
+        """
+        try:
+            signature = tuple(sorted(semantic_mask.class_names.items()))
+            if (not self._semantic_annotation_logged
+                    or signature != self._semantic_class_signature):
+                # Build the annotation context. Newer rerun versions:
+                # rr.AnnotationContext(class_descriptions=[(id, label, color), …]).
+                # 0.31.4 accepts a list of (id, label) tuples directly.
+                ctx = [(int(cid), str(name))
+                       for cid, name in semantic_mask.class_names.items()]
+                rr.log(
+                    "world/camera/semantic",
+                    rr.AnnotationContext(ctx),
+                    static=True,
+                )
+                self._semantic_annotation_logged = True
+                self._semantic_class_signature = signature
+
+            rr.log(
+                "world/camera/semantic",
+                rr.SegmentationImage(semantic_mask.mask),
+            )
+        except Exception as e:
+            log.debug("Semantic log failed: %s", e)
 
     # ------------------------------------------------------------------
     # Metrics

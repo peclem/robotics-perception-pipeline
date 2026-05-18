@@ -294,6 +294,204 @@ class TestRerunLogger:
     def test_close_always_safe(self, cfg):
         logger = RerunLogger(cfg)
         logger.close()   # before connect — must not raise
+
+
+# ---------------------------------------------------------------------------
+# TestRerunShowcaseLayers — voxels / rooms / semantic mask
+# ---------------------------------------------------------------------------
+
+class _FakeRR:
+    """
+    Minimal stand-in for the `rerun` module. Records every log call so
+    tests can assert which entity paths were written + what primitives
+    were used. Each Rerun primitive constructor (Image, Points3D,
+    LineStrips3D, SegmentationImage, AnnotationContext, Clear) returns
+    a tagged dict so the test can inspect the payload.
+    """
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    # Timeline
+    def set_time(self, *a, **k):  # noqa: D401
+        return None
+
+    # Primitive constructors — return tagged dicts the test can inspect.
+    def Image(self, arr):                  return {"type": "Image", "shape": arr.shape}
+    def Boxes2D(self, **kw):               return {"type": "Boxes2D", **kw}
+    def Points3D(self, **kw):              return {"type": "Points3D", **kw}
+    def LineStrips3D(self, strips, **kw):  return {"type": "LineStrips3D",
+                                                    "n": len(strips), **kw}
+    def LineStrips2D(self, strips, **kw):  return {"type": "LineStrips2D",
+                                                    "n": len(strips), **kw}
+    def Arrows2D(self, **kw):              return {"type": "Arrows2D", **kw}
+    def SegmentationImage(self, arr):      return {"type": "SegmentationImage",
+                                                    "shape": arr.shape}
+    def AnnotationContext(self, ctx):      return {"type": "AnnotationContext",
+                                                    "ctx": ctx}
+    def Clear(self, recursive=False):      return {"type": "Clear",
+                                                    "recursive": recursive}
+    def Scalars(self, *a, **k):            return {"type": "Scalars"}
+
+    class _BoxFormat:
+        XYXY = "XYXY"
+    Box2DFormat = _BoxFormat()
+
+    def log(self, path, primitive, **kwargs):
+        self.calls.append({"path": path, "primitive": primitive, **kwargs})
+
+
+def _semantic_mask(mask=None, names=None):
+    from perception.semantic_segmenter import SemanticMask
+    if mask is None:
+        mask = np.array([[0, 1], [1, 0]], dtype=np.int32)
+    if names is None:
+        names = {0: "road", 1: "person"}
+    return SemanticMask(
+        mask=mask, class_names=names, dataset="cityscapes",
+        timestamp=0.0, frame_idx=0,
+    )
+
+
+def _occupancy_3d(centres=None):
+    from world_model.occupancy_3d import Occupancy3D, Occupancy3DParams
+    voxels = {}
+    if centres is not None:
+        for (i, j, k) in centres:
+            voxels[(i, j, k)] = np.int8(100)
+    return Occupancy3D(occupied_voxels=voxels, params=Occupancy3DParams())
+
+
+def _rooms(n: int = 2):
+    from world_model.room_layer import Room
+    out = []
+    for r_id in range(1, n + 1):
+        poly = np.array([[0, 0], [1 + r_id, 0],
+                          [1 + r_id, 1 + r_id], [0, 1 + r_id]], dtype=np.float64)
+        out.append(Room(
+            room_id=r_id,
+            polygon_world=poly,
+            centroid=poly.mean(axis=0),
+            area_m2=float((1 + r_id) ** 2),
+            bbox_world=(0.0, 0.0, float(1 + r_id), float(1 + r_id)),
+        ))
+    return out
+
+
+class TestRerunShowcaseLayers:
+    """
+    Asserts that RerunLogger.log_frame emits the expected entity paths
+    and Rerun primitives when occupancy_3d / rooms / semantic_mask are
+    provided. Uses _FakeRR to intercept log calls.
+    """
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _paths(self, fake):
+        return {c["path"] for c in fake.calls}
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def test_voxels_logged_as_points3d(self, cfg):
+        logger = self._ready_logger(cfg)
+        sm_occ = _occupancy_3d(centres=[(10, 10, 5), (10, 11, 5)])
+        logger.log_frame(make_frame(), [], [], occupancy_3d=sm_occ)
+        fake = logger._rr
+        calls = self._by_path(fake, "world/occupancy_3d")
+        assert calls, "expected world/occupancy_3d to be logged"
+        prim = calls[-1]["primitive"]
+        assert prim["type"] == "Points3D"
+        assert prim["positions"].shape == (2, 3)
+
+    def test_voxels_empty_clears_entity(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [], occupancy_3d=_occupancy_3d())
+        clears = [c for c in logger._rr.calls
+                  if c["path"] == "world/occupancy_3d"
+                  and c["primitive"]["type"] == "Clear"]
+        assert clears, "expected Clear on empty occupancy_3d"
+
+    def test_rooms_logged_as_linestrips3d_plus_labels(self, cfg):
+        logger = self._ready_logger(cfg)
+        rooms = _rooms(n=2)
+        logger.log_frame(make_frame(), [], [], rooms=rooms)
+        fake = logger._rr
+        # Polygons.
+        poly_calls = self._by_path(fake, "world/rooms/polygons")
+        assert poly_calls
+        assert poly_calls[-1]["primitive"]["type"] == "LineStrips3D"
+        assert poly_calls[-1]["primitive"]["n"] == 2
+        # Labels as Points3D.
+        label_calls = self._by_path(fake, "world/rooms/labels")
+        assert label_calls
+        assert label_calls[-1]["primitive"]["type"] == "Points3D"
+        assert label_calls[-1]["primitive"]["labels"] == ["room_1", "room_2"]
+
+    def test_rooms_empty_clears_entity(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [], rooms=[])
+        clears = [c for c in logger._rr.calls
+                  if c["path"] == "world/rooms"
+                  and c["primitive"]["type"] == "Clear"]
+        assert clears
+
+    def test_semantic_mask_logs_annotation_context_once(self, cfg):
+        logger = self._ready_logger(cfg)
+        sm = _semantic_mask()
+        logger.log_frame(make_frame(), [], [], semantic_mask=sm)
+        logger.log_frame(make_frame(), [], [], semantic_mask=sm)
+        ctx_calls = [
+            c for c in logger._rr.calls
+            if c["primitive"]["type"] == "AnnotationContext"
+        ]
+        # Logged once, not twice.
+        assert len(ctx_calls) == 1
+        # The id→label table matches.
+        assert (0, "road") in ctx_calls[0]["primitive"]["ctx"]
+        assert (1, "person") in ctx_calls[0]["primitive"]["ctx"]
+
+    def test_semantic_mask_logs_segmentation_image_each_frame(self, cfg):
+        logger = self._ready_logger(cfg)
+        sm = _semantic_mask()
+        logger.log_frame(make_frame(), [], [], semantic_mask=sm)
+        logger.log_frame(make_frame(), [], [], semantic_mask=sm)
+        seg_calls = [
+            c for c in logger._rr.calls
+            if c["primitive"]["type"] == "SegmentationImage"
+        ]
+        assert len(seg_calls) == 2
+
+    def test_class_signature_change_relogs_context(self, cfg):
+        logger = self._ready_logger(cfg)
+        sm1 = _semantic_mask(names={0: "road"})
+        sm2 = _semantic_mask(names={0: "road", 1: "person"})
+        logger.log_frame(make_frame(), [], [], semantic_mask=sm1)
+        logger.log_frame(make_frame(), [], [], semantic_mask=sm2)
+        ctx_calls = [
+            c for c in logger._rr.calls
+            if c["primitive"]["type"] == "AnnotationContext"
+        ]
+        # Different class signatures → two context logs.
+        assert len(ctx_calls) == 2
+
+    def test_no_extra_calls_when_all_layers_none(self, cfg):
+        logger = self._ready_logger(cfg)
+        baseline = len(logger._rr.calls)
+        logger.log_frame(make_frame(), [], [])
+        after = logger._rr.calls
+        # No occupancy / rooms / semantic entities should appear when
+        # the caller passed nothing for them.
+        paths = self._paths(logger._rr)
+        assert "world/occupancy_3d"      not in paths
+        assert "world/rooms/polygons"    not in paths
+        assert "world/rooms/labels"      not in paths
+        assert "world/camera/semantic"   not in paths
+
+
 class TestWSLHostDetect:
 
     def test_explicit_host_unchanged(self):
