@@ -552,6 +552,32 @@ class PoseEstimatorConfig:
         return asdict(self)
 
 @dataclass
+class SemanticConfig:
+    """
+    Semantic segmentation backend + per-dataset settings.
+
+    type
+        'null'       — NullSemanticSegmenter (default; no GPU cost)
+        'mask2former'— Mask2FormerSemanticSegmenter (HuggingFace)
+        Future backends slot in here ('oneformer', 'openseed', ...).
+
+    dataset
+        Hint for downstream helpers (drivable_mask,
+        semantic_class_stability) so they can look up the right class
+        tables. Should match the dataset the chosen `model` was
+        fine-tuned on. 'cityscapes' | 'ade20k' covered out of the box.
+    """
+    enabled: bool = False
+    type:    str  = "null"
+    model:   str  = "facebook/mask2former-swin-tiny-cityscapes-semantic"
+    device:  str  = "cuda"
+    dataset: str  = "cityscapes"
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class VIOConfig:
     """
     Visual-inertial error-state EKF tuning. Mirrors
@@ -613,6 +639,7 @@ class PipelineConfig:
     health_monitor:         HealthMonitorConfig        = field(default_factory=HealthMonitorConfig)
     imu:                    IMUConfig                  = field(default_factory=IMUConfig)
     vio:                    VIOConfig                  = field(default_factory=VIOConfig)
+    semantic:               SemanticConfig             = field(default_factory=SemanticConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -643,6 +670,7 @@ class PipelineConfig:
             "health_monitor":         self.health_monitor.as_dict(),
             "imu":                    self.imu.as_dict(),
             "vio":                    self.vio.as_dict(),
+            "semantic":               self.semantic.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -967,6 +995,26 @@ def _validate(raw: dict) -> None:
     if g_w is not None and (not isinstance(g_w, list) or len(g_w) != 3):
         errors.append("vio.gravity_w must be a list of 3 floats (world-frame gravity).")
 
+    # Semantic segmentation
+    sem_raw = raw.get("semantic", {})
+    sem_type = sem_raw.get("type", "null")
+    if sem_type not in ("null", "mask2former"):
+        errors.append(
+            f"semantic.type={sem_type!r} is invalid. "
+            "Supported: 'null', 'mask2former'."
+        )
+    sem_ds = sem_raw.get("dataset", "cityscapes")
+    if sem_ds not in ("cityscapes", "ade20k"):
+        # Not fatal — downstream helpers gracefully fall back when the
+        # dataset is unknown — but flag it so config typos surface.
+        warnings.warn(
+            f"semantic.dataset={sem_ds!r} is not in the built-in helper "
+            "tables ('cityscapes', 'ade20k'). drivable_mask + "
+            "semantic_class_stability will return empty/SEMI_STATIC for "
+            "this dataset until those tables are extended.",
+            stacklevel=4,
+        )
+
     # World map
     wmap_raw = raw.get("world_map", {})
     _require_positive_float(errors, wmap_raw, "world_map.spatial_gate_m")
@@ -1041,6 +1089,7 @@ def _build(raw: dict) -> PipelineConfig:
     hm = raw.get("health_monitor", {})
     imu = raw.get("imu", {})
     vio = raw.get("vio", {})
+    sem = raw.get("semantic", {})
 
     static_ext_raw = cf.get("static_extrinsics", []) or []
     static_extrinsics = [
@@ -1270,5 +1319,13 @@ def _build(raw: dict) -> PipelineConfig:
             gravity_w=                [float(x) for x in vio.get(
                 "gravity_w", [0.0, 0.0, -9.81]
             )],
+        ),
+        semantic=SemanticConfig(
+            enabled= bool(sem.get("enabled", False)),
+            type=    str(sem.get("type",    "null")),
+            model=   str(sem.get("model",
+                                 "facebook/mask2former-swin-tiny-cityscapes-semantic")),
+            device=  str(sem.get("device",  "cuda")),
+            dataset= str(sem.get("dataset", "cityscapes")),
         ),
     )

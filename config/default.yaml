@@ -161,6 +161,16 @@ vio:
   visual_position_std_m:      0.05
   visual_orientation_std_rad: 0.02      # ≈ 1.1°
   gravity_w: [0.0, 0.0, -9.81]          # world-frame gravity (Z-up by default)
+semantic:
+  # Semantic segmentation backend. NullSemanticSegmenter is the
+  # default; switch type to 'mask2former' once transformers + a GPU
+  # model are available. dataset hint drives drivable_mask +
+  # semantic_class_stability helper lookups.
+  enabled: false
+  type: "null"           # 'null' | 'mask2former'
+  model: facebook/mask2former-swin-tiny-cityscapes-semantic
+  device: cuda
+  dataset: cityscapes    # 'cityscapes' | 'ade20k'
 health_monitor:
   enabled: true             # per-stage latency budgets + diagnostics
   warn_after:  3            # consecutive budget breaches → WARN

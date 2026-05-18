@@ -60,7 +60,9 @@ marked. Unimplemented components and their integration points are identified.
     ║                               update; consumes preint + visual  ║
     ║                               pose. Loose coupling, no live     ║
     ║                               pipeline wiring yet.              ║
-    ║  [ ] Semantic segmentation    —                                  ║
+    ║  [✓] Semantic segmentation    Mask2Former (Swin-T, Cityscapes), ║
+    ║                               drivable_mask + class-stability  ║
+    ║                               helpers. ABC + Null fallback.    ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
@@ -637,7 +639,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               575 unit tests — all hardware-free; integration
+    tests/               595 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 
