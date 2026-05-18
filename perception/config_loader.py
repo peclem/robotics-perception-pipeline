@@ -137,13 +137,20 @@ class DetectorConfig:
 
 @dataclass
 class TrackerConfig:
-    high_thresh:      float = 0.50
-    low_thresh:       float = 0.10
-    new_track_thresh: float = 0.50
-    iou_threshold:    float = 0.30
-    max_age:          int   = 30
-    min_hits:         int   = 1
-    use_ekf:          bool  = False
+    high_thresh:        float = 0.50
+    low_thresh:         float = 0.10
+    new_track_thresh:   float = 0.50
+    iou_threshold:      float = 0.30
+    max_age:            int   = 30
+    min_hits:           int   = 1
+    use_ekf:            bool  = False
+    # Appearance-aware association. When True AND detection embeddings
+    # are computed (typically via DINOv2), the cost matrix blends IoU
+    # with cosine distance: cost = (1 - w) * iou + w * appearance.
+    # Defaults match StrongSORT (w=0.25) and Deep OC-SORT (EMA=0.9).
+    use_appearance:     bool  = False
+    appearance_weight:  float = 0.25
+    appearance_ema:     float = 0.9
     def as_dict(self) -> dict:
         return asdict(self)
 
@@ -878,6 +885,8 @@ def _validate(raw: dict) -> None:
     _require_in_range(errors, trk, "tracker.iou_threshold",    0.0, 1.0, exclusive=True)
     _require_positive_int(errors, trk, "tracker.max_age")
     _require_positive_int(errors, trk, "tracker.min_hits")
+    _require_in_range(errors, trk, "tracker.appearance_weight", 0.0, 1.0)
+    _require_in_range(errors, trk, "tracker.appearance_ema",    0.0, 1.0)
 
     lo = trk.get("low_thresh")
     hi = trk.get("high_thresh")
@@ -1150,13 +1159,16 @@ def _build(raw: dict) -> PipelineConfig:
             img_size=             int(d.get("img_size", 640)),
         ),
         tracker=TrackerConfig(
-            high_thresh=      float(t.get("high_thresh", 0.50)),
-            low_thresh=       float(t.get("low_thresh", 0.10)),
-            new_track_thresh= float(t.get("new_track_thresh", 0.50)),
-            iou_threshold=    float(t.get("iou_threshold", 0.30)),
-            max_age=          int(t.get("max_age", 30)),
-            min_hits=         int(t.get("min_hits", 1)),
-            use_ekf=bool(t.get("use_ekf", False)),
+            high_thresh=       float(t.get("high_thresh", 0.50)),
+            low_thresh=        float(t.get("low_thresh", 0.10)),
+            new_track_thresh=  float(t.get("new_track_thresh", 0.50)),
+            iou_threshold=     float(t.get("iou_threshold", 0.30)),
+            max_age=           int(t.get("max_age", 30)),
+            min_hits=          int(t.get("min_hits", 1)),
+            use_ekf=           bool(t.get("use_ekf", False)),
+            use_appearance=    bool(t.get("use_appearance", False)),
+            appearance_weight= float(t.get("appearance_weight", 0.25)),
+            appearance_ema=    float(t.get("appearance_ema", 0.9)),
         ),
         kalman_filter=KalmanFilterConfig(
             initial_covariance=InitialCovarianceConfig(

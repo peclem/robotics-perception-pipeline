@@ -42,7 +42,9 @@ marked. Unimplemented components and their integration points are identified.
     ║  PERCEPTION                                                      ║
     ║                                                                  ║
     ║  [✓] Object detection         YOLOv8n fine-tuned on MOT17       ║
-    ║  [✓] Multi-object tracking    ByteTrack two-stage association    ║
+    ║  [✓] Multi-object tracking    ByteTrack two-stage association,  ║
+    ║                               optional DINOv2 appearance blend  ║
+    ║                               (StrongSORT/Deep OC-SORT-style)   ║
     ║  [✓] KF state estimation      Joseph form, 8D state, NIS        ║
     ║  [✓] EKF — constant turn rate 9D state + ω, analytical Jac.    ║
     ║  [✓] Camera motion comp.      LK optical flow + affine RANSAC   ║
@@ -510,8 +512,11 @@ All parameters are externalised in config/default.yaml.
         confidence_threshold: 0.25
 
     tracker:
-        use_ekf: false      # true = ExtendedKalmanFilter (CTR model)
-        use_cmc: false      # true = camera motion compensation
+        use_ekf: false              # true = ExtendedKalmanFilter (CTR model)
+        use_cmc: false              # true = camera motion compensation
+        use_appearance: false       # blend DINOv2 cosine distance into matcher
+        appearance_weight: 0.25     # 0 = IoU only, 1 = appearance only
+        appearance_ema: 0.9         # EMA alpha on the track's stored embedding
 
     depth:
         enabled: false              # master switch (false → NullDepthEstimator)
@@ -642,7 +647,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               602 unit tests — all hardware-free; integration
+    tests/               619 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 

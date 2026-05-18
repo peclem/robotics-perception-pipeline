@@ -384,11 +384,37 @@ class Pipeline:
             with self._health.stage("depth"):
                 depth_estimates_list = self._depth_estimator.estimate(frame, detections)
 
+            # Per-DETECTION appearance embeddings. Computed upfront so
+            # the tracker can blend cosine distance into the per-frame
+            # cost matrix (Deep OC-SORT / StrongSORT-style). The same
+            # embeddings flow through to the matched tracks via
+            # Track.update_embedding inside ByteTracker — no second
+            # extraction needed for WorldMap. Gated on whichever
+            # consumer is enabled to avoid wasted GPU time.
+            det_embeddings = None
+            needs_appearance = (
+                detections and not isinstance(
+                    self._appearance_extractor, NullAppearanceExtractor,
+                ) and (
+                    self._cfg.tracker.use_appearance
+                    or self._world_map is not None
+                )
+            )
+            if needs_appearance:
+                with self._health.stage("appearance"):
+                    bboxes = [d.bbox_xyxy for d in detections]
+                    det_embeddings = self._appearance_extractor.extract(
+                        frame.image, bboxes,
+                    )
+
             # Build track_id → depth estimate mapping after tracker update
             # (tracker assigns IDs, then we match detections to tracks by position)
             with self._health.stage("tracker"):
                 t0               = time.monotonic()
-                confirmed_tracks = self._tracker.update(detections, frame)
+                confirmed_tracks = self._tracker.update(
+                    detections, frame,
+                    detection_embeddings=det_embeddings,
+                )
                 t_track          = time.monotonic() - t0
 
             depth_map = {}
@@ -418,15 +444,15 @@ class Pipeline:
                     )
 
             # Per-track appearance embeddings for WorldMap re-association.
-            # Only computed when an extractor is configured AND the
-            # world map is enabled — otherwise it's wasted GPU time.
+            # The tracker already EMA-updated each matched track's
+            # embedding from `det_embeddings` above, so just read it off
+            # the confirmed tracks. Tracks with no embedding (never
+            # matched to a detection that had one) propagate None and
+            # the WorldMap falls back to spatial-only re-association.
             appearance_map = {}
-            if self._world_map is not None and confirmed_tracks:
-                with self._health.stage("appearance"):
-                    bboxes = [tr.bbox_xyxy for tr in confirmed_tracks]
-                    embs = self._appearance_extractor.extract(frame.image, bboxes)
-                    for tr, emb in zip(confirmed_tracks, embs):
-                        appearance_map[tr.track_id] = emb
+            if self._world_map is not None:
+                for tr in confirmed_tracks:
+                    appearance_map[tr.track_id] = tr.embedding
 
             # Semantic segmentation — feeds SceneGraph stability refinement.
             # Skip the work entirely when the backend is the Null one;

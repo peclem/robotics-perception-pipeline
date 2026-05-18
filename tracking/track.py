@@ -101,6 +101,11 @@ class Track:
         self.class_id: int   = detection.class_id
         self.class_name: str = detection.class_name
         self.history:  list  = []
+        # Appearance embedding (L2-normalised), set externally by ByteTracker
+        # via update_embedding() when an AppearanceExtractor is wired in.
+        # None means "no appearance info yet"; the matcher falls back to
+        # IoU-only for tracks that have never been embedded.
+        self.embedding: Optional[np.ndarray] = None
 
 
     #Core operations — called by ByteTracker each frame
@@ -137,6 +142,32 @@ class Track:
         # Snapshot for world model history
         snap = self.kf.snapshot(timestamp=timestamp, frame_idx=self.age)
         self.history.append(snap)
+
+    def update_embedding(
+        self, new_emb: np.ndarray, alpha: float = 0.9,
+    ) -> None:
+        """
+        Update the track's appearance embedding via exponential moving
+        average and re-normalise to unit length.
+
+        EMA smooths out per-frame noise (lighting, occlusion, motion
+        blur) while still adapting to the track over time. alpha is the
+        weight on the *existing* embedding — alpha=0.9 keeps 90% of
+        what was there before, mixing in 10% of the new sample. Picked
+        to match Deep OC-SORT / StrongSORT defaults.
+
+        Re-normalisation is required because the cosine-similarity
+        association assumes unit-norm embeddings — EMA of two unit
+        vectors is generally not unit-norm.
+        """
+        if new_emb is None:
+            return
+        new_emb = np.asarray(new_emb, dtype=np.float64).reshape(-1)
+        if self.embedding is None:
+            self.embedding = new_emb / max(np.linalg.norm(new_emb), 1e-12)
+            return
+        mixed = alpha * self.embedding + (1.0 - alpha) * new_emb
+        self.embedding = mixed / max(np.linalg.norm(mixed), 1e-12)
 
     # ------------------------------------------------------------------
     # State accessors

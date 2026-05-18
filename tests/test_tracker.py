@@ -823,3 +823,285 @@ class TestByteTrackerEdgeCases:
         assert tracker.n_confirmed >= 0
         assert isinstance(tracker.confirmed_tracks, list)
         assert isinstance(tracker.lost_tracks, list)
+
+
+# ---------------------------------------------------------------------------
+# Appearance-aware association
+# ---------------------------------------------------------------------------
+
+from tracking.association import (
+    appearance_distance, build_combined_cost_matrix,
+)
+
+
+def _unit(v):
+    v = np.asarray(v, dtype=np.float64)
+    return v / np.linalg.norm(v)
+
+
+@pytest.fixture
+def cfg_appearance(cfg):
+    """`cfg` fixture with appearance-aware tracking enabled."""
+    cfg = {**cfg, "tracker": {**cfg["tracker"]}}
+    cfg["tracker"]["use_appearance"]    = True
+    cfg["tracker"]["appearance_weight"] = 0.5
+    cfg["tracker"]["appearance_ema"]    = 0.9
+    return cfg
+
+
+class TestAppearanceDistance:
+    """Cosine-distance cost matrix between tracks and detection embeddings."""
+
+    class _T:
+        def __init__(self, emb): self.embedding = emb
+
+    def test_identical_embeddings_give_zero_distance(self):
+        e = _unit([1, 0, 0])
+        d = appearance_distance([self._T(e)], [e])
+        assert d.shape == (1, 1)
+        assert d[0, 0] == pytest.approx(0.0, abs=1e-9)
+
+    def test_orthogonal_embeddings_give_one(self):
+        a = _unit([1, 0, 0]); b = _unit([0, 1, 0])
+        d = appearance_distance([self._T(a)], [b])
+        assert d[0, 0] == pytest.approx(1.0, abs=1e-9)
+
+    def test_missing_embedding_yields_default_cost(self):
+        a = _unit([1, 0, 0])
+        # Track has no embedding → cost 1.0 (matcher ignores via IoU).
+        d = appearance_distance([self._T(None)], [a])
+        assert d[0, 0] == 1.0
+        # Detection has no embedding → cost 1.0.
+        d2 = appearance_distance([self._T(a)], [None])
+        assert d2[0, 0] == 1.0
+
+    def test_empty_inputs_return_empty_matrix(self):
+        assert appearance_distance([], []).shape == (0, 0)
+        assert appearance_distance([], [_unit([1, 0])]).shape == (0, 1)
+        assert appearance_distance([self._T(_unit([1, 0]))], []).shape == (1, 0)
+
+    def test_shape_mismatch_skipped_not_crashes(self):
+        d = appearance_distance(
+            [self._T(_unit([1, 0, 0]))], [_unit([1, 0])],  # 3-D vs 2-D
+        )
+        assert d[0, 0] == 1.0  # silently treated as missing
+
+
+class TestCombinedCostMatrix:
+    """Blended IoU + appearance cost matrix correctness."""
+
+    class _T:
+        def __init__(self, bbox, emb=None):
+            self.bbox_xyxy = np.array(bbox, dtype=np.float64)
+            self.embedding = emb
+
+    class _D:
+        def __init__(self, bbox):
+            self.bbox_xyxy = np.array(bbox, dtype=np.float64)
+
+    def test_zero_weight_collapses_to_iou(self):
+        tracks = [self._T([0, 0, 10, 10], _unit([1, 0]))]
+        dets   = [self._D([0, 0, 10, 10])]
+        embs   = [_unit([0, 1])]  # orthogonal — would penalise heavily
+        c = build_combined_cost_matrix(
+            tracks, dets, embs, appearance_weight=0.0,
+        )
+        # Identical bboxes → IoU=1 → cost=0. Appearance should be ignored.
+        assert c[0, 0] == pytest.approx(0.0, abs=1e-9)
+
+    def test_blend_50_50(self):
+        tracks = [self._T([0, 0, 10, 10], _unit([1, 0]))]
+        dets   = [self._D([0, 0, 10, 10])]
+        embs   = [_unit([0, 1])]   # orthogonal → app_cost = 1
+        c = build_combined_cost_matrix(
+            tracks, dets, embs, appearance_weight=0.5,
+        )
+        # iou_cost=0, app_cost=1, blend=0.5*0 + 0.5*1 = 0.5
+        assert c[0, 0] == pytest.approx(0.5, abs=1e-9)
+
+    def test_appearance_disambiguates_overlapping_bboxes(self):
+        """
+        Two tracks with very similar bboxes (high IoU both ways) but
+        distinct appearances. Detection's appearance should pick the
+        right track even though the Hungarian on IoU alone could
+        plausibly swap them.
+        """
+        e_red  = _unit([1.0, 0.0])
+        e_blue = _unit([0.0, 1.0])
+        tracks = [self._T([0, 0, 10, 10], e_red),
+                  self._T([1, 1, 11, 11], e_blue)]  # nearly identical bboxes
+        dets   = [self._D([0, 0, 10, 10])]
+        # Detection's appearance matches track 0 (red).
+        c = build_combined_cost_matrix(
+            tracks, dets, [e_red], appearance_weight=0.5,
+        )
+        # Track 0 should have the lower cost.
+        assert c[0, 0] < c[1, 0]
+
+    def test_iou_gate_overrides_appearance(self):
+        """
+        A track with great appearance match but no IoU overlap must
+        still be rejected by the gate (motion consistency wins).
+        """
+        e = _unit([1, 0, 0])
+        tracks = [self._T([0, 0, 10, 10],     e)]
+        dets   = [self._D([1000, 1000, 1010, 1010])]   # completely disjoint
+        c = build_combined_cost_matrix(
+            tracks, dets, [e], appearance_weight=0.9,
+            max_iou_distance=0.9,
+        )
+        # Gated to high sentinel cost > threshold (1.9 in this case).
+        assert c[0, 0] > 1.0
+
+
+class TestTrackEmbeddingEMA:
+    """Track.update_embedding smoothing + re-normalisation."""
+
+    def _make(self, cfg):
+        det = make_detection(*box(100, 100))
+        return Track(det, cfg)
+
+    def test_first_embedding_normalised(self, cfg):
+        tr = self._make(cfg)
+        tr.update_embedding(np.array([3.0, 0.0, 0.0]))
+        assert tr.embedding is not None
+        assert np.linalg.norm(tr.embedding) == pytest.approx(1.0, abs=1e-9)
+
+    def test_ema_blend_correct(self, cfg):
+        tr = self._make(cfg)
+        tr.update_embedding(_unit([1, 0]), alpha=0.0)  # seed
+        # alpha=0.5: mix is 0.5*old + 0.5*new before re-normalisation
+        new = _unit([0, 1])
+        tr.update_embedding(new, alpha=0.5)
+        # The new embedding should be (1,1)/sqrt(2) after EMA + renorm.
+        assert tr.embedding == pytest.approx(_unit([1, 1]), abs=1e-9)
+
+    def test_ema_keeps_unit_norm(self, cfg):
+        tr = self._make(cfg)
+        rng = np.random.default_rng(0)
+        for _ in range(5):
+            tr.update_embedding(_unit(rng.standard_normal(8)), alpha=0.9)
+            assert np.linalg.norm(tr.embedding) == pytest.approx(1.0, abs=1e-9)
+
+    def test_none_embedding_is_noop(self, cfg):
+        tr = self._make(cfg)
+        tr.update_embedding(_unit([1, 0]))
+        before = tr.embedding.copy()
+        tr.update_embedding(None)
+        assert np.allclose(tr.embedding, before)
+
+
+class TestByteTrackerAppearance:
+    """End-to-end ByteTracker behaviour with detection_embeddings wired in."""
+
+    def test_default_use_appearance_off_is_backwards_compatible(self, cfg):
+        """
+        Passing embeddings while `use_appearance=False` must not change
+        association vs the embedding-free baseline.
+        """
+        cfg_off = {**cfg, "tracker": {**cfg["tracker"], "use_appearance": False}}
+        tr_off = ByteTracker(cfg_off)
+        det = make_detection(*box(100, 100))
+        frame = make_frame(ts_offset=0.0)
+        confirmed = tr_off.update(
+            [det], frame, detection_embeddings=[_unit([1, 0])],
+        )
+        assert len(confirmed) == 1
+
+    def test_track_embedding_set_after_first_match(self, cfg_appearance):
+        tracker = ByteTracker(cfg_appearance)
+        det = make_detection(*box(100, 100))
+        frame = make_frame(ts_offset=0.0)
+        e = _unit([1.0, 0.0, 0.0])
+        tracker.update([det], frame, detection_embeddings=[e])
+        # New track now exists, with its embedding seeded.
+        tr = tracker.tracks[0]
+        assert tr.embedding is not None
+        assert np.allclose(tr.embedding, e, atol=1e-9)
+
+    def test_track_embedding_updated_via_ema(self, cfg_appearance):
+        tracker = ByteTracker(cfg_appearance)
+        det1 = make_detection(*box(100, 100))
+        det2 = make_detection(*box(102, 100), ts_offset=1.0/30.0)
+        frame1 = make_frame(ts_offset=0.0)
+        frame2 = make_frame(ts_offset=1.0/30.0)
+        tracker.update([det1], frame1, detection_embeddings=[_unit([1, 0])])
+        tracker.update([det2], frame2, detection_embeddings=[_unit([0, 1])])
+        tr = tracker.tracks[0]
+        # alpha=0.9 → mostly the first embedding, leaning slightly toward second.
+        x, y = tr.embedding
+        assert x > y > 0.0
+
+    def test_appearance_prevents_id_swap_on_ambiguous_iou(self):
+        """
+        Two tracks sit close enough that each detection has IoU with
+        BOTH tracks. IoU-only Hungarian picks the wrong assignment
+        (lower total cost) — appearance with distinct embeddings flips
+        the result back. Run side-by-side: same setup, only
+        use_appearance toggled.
+
+        Setup:
+          Track T1 ('red')  at (100, 200), bbox 60×45
+          Track T2 ('blue') at (150, 200), bbox 60×45
+          Det D1 ('red')   at (130, 200) — closer to T2 by IoU
+          Det D2 ('blue')  at (120, 200) — closer to T1 by IoU
+          IoU-only Hungarian (min total cost) → {T1↔D2, T2↔D1}: WRONG
+          Appearance → {T1↔D1, T2↔D2}: CORRECT
+        """
+        def run(use_appearance: bool):
+            cfg_local = {
+                "tracker": {
+                    "high_thresh": 0.50, "low_thresh": 0.10,
+                    "new_track_thresh": 0.50, "iou_threshold": 0.05,
+                    "max_age": 3, "min_hits": 1,
+                    "use_appearance": use_appearance,
+                    "appearance_weight": 0.5, "appearance_ema": 0.9,
+                },
+                "kalman_filter": {
+                    "initial_covariance": {"p_position": 10.0, "p_size": 10.0, "p_velocity": 100.0},
+                    "process_noise":      {"q_position": 1.0,  "q_size": 1.0,  "q_velocity": 0.1, "q_vel_size": 0.02},
+                    "measurement_noise":  {"r_center": 1.0,    "r_size": 1.0},
+                },
+            }
+            tracker = ByteTracker(cfg_local)
+            e_red  = _unit([1.0, 0.0])
+            e_blue = _unit([0.0, 1.0])
+            d_red_0  = make_detection(*box(100, 200), cls_name="red")
+            d_blue_0 = make_detection(*box(150, 200), cls_name="blue")
+            tracker.update(
+                [d_red_0, d_blue_0], make_frame(ts_offset=0.0),
+                detection_embeddings=[e_red, e_blue],
+            )
+            id_of = {t.class_name: t.track_id
+                     for t in tracker.confirmed_tracks}
+            # Frame 1: positions swapped vs nearest neighbour.
+            d_red_1  = make_detection(*box(130, 200), cls_name="red")
+            d_blue_1 = make_detection(*box(120, 200), cls_name="blue")
+            tracker.update(
+                [d_red_1, d_blue_1], make_frame(ts_offset=1.0/30.0),
+                detection_embeddings=[e_red, e_blue],
+            )
+            tracks_by_id = {t.track_id: t for t in tracker.confirmed_tracks}
+            return id_of, tracks_by_id
+
+        # Without appearance — Hungarian picks the wrong assignment, so
+        # the track that originally tracked the 'red' detection now sits
+        # at the 'blue' detection's position (~120).
+        Track.reset_id_counter()
+        id_of_no, tracks_no = run(use_appearance=False)
+        red_no  = tracks_no[id_of_no["red"]]
+        assert abs(red_no.position[0] - 120) < 10, (
+            f"IoU-only baseline didn't behave as expected: "
+            f"red track moved to {red_no.position[0]:.1f}"
+        )
+
+        # With appearance — Hungarian matches red→red, blue→blue.
+        Track.reset_id_counter()
+        id_of_yes, tracks_yes = run(use_appearance=True)
+        red_yes  = tracks_yes[id_of_yes["red"]]
+        blue_yes = tracks_yes[id_of_yes["blue"]]
+        assert abs(red_yes.position[0]  - 130) < 10, (
+            f"Appearance should have routed red track to D1 (~130), "
+            f"got {red_yes.position[0]:.1f}"
+        )
+        assert abs(blue_yes.position[0] - 120) < 10

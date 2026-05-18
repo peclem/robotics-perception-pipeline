@@ -64,6 +64,7 @@ from perception.camera_interface import CameraFrame
 from perception.detector import Detection
 from tracking.association import (
     build_iou_cost_matrix_with_gate,
+    build_combined_cost_matrix,
     linear_assignment,
 )
 from tracking.track import Track, TrackState
@@ -107,6 +108,14 @@ class ByteTracker:
         self._max_age:          int   = int(cfg.get("max_age",            30))
         self._min_hits:         int   = int(cfg.get("min_hits",           1))
 
+        # Appearance-aware matching: opt-in. When use_appearance is True
+        # AND detection_embeddings are passed to update(), the cost matrix
+        # is a blend of IoU and cosine-distance terms. Defaults match
+        # the literature (StrongSORT weight 0.25, Deep OC-SORT EMA 0.9).
+        self._use_appearance:     bool  = bool(cfg.get("use_appearance", False))
+        self._appearance_weight:  float = float(cfg.get("appearance_weight", 0.25))
+        self._appearance_ema:     float = float(cfg.get("appearance_ema",    0.9))
+
         # Cost threshold for linear_assignment:
         # accept match iff cost = 1 - IoU <= 1 - iou_threshold
         self._cost_thresh: float = 1.0 - self._iou_threshold
@@ -126,17 +135,25 @@ class ByteTracker:
         self,
         detections: List[Detection],
         frame: CameraFrame,
+        detection_embeddings: Optional[List[Optional[np.ndarray]]] = None,
     ) -> List[Track]:
         """
         Process one frame. Core ByteTrack update cycle.
 
         Parameters
         ----------
-        detections : output of Detector.detect() for this frame —
-                     already sorted confidence-descending (guaranteed
-                     by YOLOv8Detector).
-        frame      : CameraFrame carrying the monotonic timestamp
-                     used to compute dt for KF prediction.
+        detections           : output of Detector.detect() for this frame
+                               (already sorted confidence-descending).
+        frame                : CameraFrame carrying the monotonic
+                               timestamp used to compute dt.
+        detection_embeddings : optional list aligned with `detections`,
+                               each entry an L2-normalised appearance
+                               embedding (e.g. DINOv2) or None. When
+                               provided AND `tracker.use_appearance` is
+                               True, the association cost matrix blends
+                               IoU with cosine distance. Matched tracks
+                               receive an EMA-smoothed copy of the
+                               detection embedding.
 
         Returns
         -------
@@ -150,7 +167,9 @@ class ByteTracker:
         self._last_timestamp = frame.timestamp
 
         # ---- 1. Split detections -----------------------------------
-        dets_high, dets_low = self._split_detections(detections)
+        dets_high, dets_low, embs_high, embs_low = self._split_detections(
+            detections, detection_embeddings,
+        )
 
         # ---- 2. Predict all active tracks --------------------------
         active_tracks = [t for t in self._tracks if t.state != TrackState.REMOVED]
@@ -166,13 +185,15 @@ class ByteTracker:
         (matched_s1,
          unmatched_tracks_s1,
          unmatched_dets_high) = self._associate(
-            dets_high, active_tracks, self._cost_thresh
+            dets_high, active_tracks, self._cost_thresh, embs_high,
         )
 
         # Update matched tracks (stage 1)
         for t_idx, d_idx in matched_s1:
             track = active_tracks[t_idx]
             track.update(dets_high[d_idx], timestamp=frame.timestamp)
+            if embs_high[d_idx] is not None:
+                track.update_embedding(embs_high[d_idx], alpha=self._appearance_ema)
             self._maybe_confirm(track)
             # Re-confirm a LOST track that was found
             if track.state == TrackState.LOST:
@@ -185,13 +206,15 @@ class ByteTracker:
         (matched_s2,
          unmatched_tracks_s2,
          _unmatched_dets_low) = self._associate(
-            dets_low, pool_s2, self._cost_thresh
+            dets_low, pool_s2, self._cost_thresh, embs_low,
         )
 
         # Update matched tracks (stage 2)
         for t_idx, d_idx in matched_s2:
             track = pool_s2[t_idx]
             track.update(dets_low[d_idx], timestamp=frame.timestamp)
+            if embs_low[d_idx] is not None:
+                track.update_embedding(embs_low[d_idx], alpha=self._appearance_ema)
             self._maybe_confirm(track)
             if track.state == TrackState.LOST:
                 track.state = TrackState.CONFIRMED
@@ -205,6 +228,10 @@ class ByteTracker:
             det = dets_high[d_idx]
             if det.confidence >= self._new_track_thresh:
                 new_track = Track(det, self._config)
+                if embs_high[d_idx] is not None:
+                    new_track.update_embedding(
+                        embs_high[d_idx], alpha=self._appearance_ema,
+                    )
                 # If min_hits == 1, confirm immediately
                 self._maybe_confirm(new_track)
                 self._tracks.append(new_track)
@@ -280,27 +307,42 @@ class ByteTracker:
     def _split_detections(
         self,
         detections: List[Detection],
-    ) -> tuple[List[Detection], List[Detection]]:
+        embeddings: Optional[List[Optional[np.ndarray]]] = None,
+    ) -> tuple[List[Detection], List[Detection],
+               List[Optional[np.ndarray]], List[Optional[np.ndarray]]]:
         """
-        Split detections into high-confidence and low-confidence pools.
+        Split detections (and aligned embeddings, if given) into high-
+        and low-confidence pools.
 
         D_high (conf >= high_thresh) → primary association + track birth
         D_low  (low_thresh <= conf < high_thresh) → rescue association only
         Detections below low_thresh are discarded entirely.
         """
-        dets_high = [d for d in detections if d.confidence >= self._high_thresh]
-        dets_low  = [d for d in detections
-                     if self._low_thresh <= d.confidence < self._high_thresh]
-        return dets_high, dets_low
+        dets_high: List[Detection] = []
+        dets_low:  List[Detection] = []
+        embs_high: List[Optional[np.ndarray]] = []
+        embs_low:  List[Optional[np.ndarray]] = []
+        for i, d in enumerate(detections):
+            e = embeddings[i] if embeddings is not None else None
+            if d.confidence >= self._high_thresh:
+                dets_high.append(d)
+                embs_high.append(e)
+            elif d.confidence >= self._low_thresh:
+                dets_low.append(d)
+                embs_low.append(e)
+            # else: discard
+        return dets_high, dets_low, embs_high, embs_low
 
     def _associate(
         self,
         detections: List[Detection],
         tracks: List[Track],
         cost_thresh: float,
+        detection_embeddings: Optional[List[Optional[np.ndarray]]] = None,
     ) -> tuple[list, list, list]:
         """
-        Build IoU cost matrix and run Hungarian assignment.
+        Build the per-frame cost matrix (IoU only, or blended IoU +
+        appearance when enabled) and run Hungarian assignment.
 
         Returns
         -------
@@ -315,9 +357,16 @@ class ByteTracker:
                 list(range(len(detections))),
             )
 
-        cost_matrix = build_iou_cost_matrix_with_gate(
-            tracks, detections, max_iou_distance=self._cost_thresh
-        )
+        if self._use_appearance and detection_embeddings is not None:
+            cost_matrix = build_combined_cost_matrix(
+                tracks, detections, detection_embeddings,
+                appearance_weight=self._appearance_weight,
+                max_iou_distance=self._cost_thresh,
+            )
+        else:
+            cost_matrix = build_iou_cost_matrix_with_gate(
+                tracks, detections, max_iou_distance=self._cost_thresh,
+            )
 
         return linear_assignment(cost_matrix, thresh=cost_thresh)
 

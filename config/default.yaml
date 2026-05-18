@@ -40,6 +40,12 @@ tracker:
   min_hits: 1
   use_ekf: false
   use_cmc: false
+  # Per-frame appearance-aware association. When true AND the
+  # AppearanceExtractor is non-null, the Hungarian cost matrix is
+  # (1-w)*IoU + w*cos-distance, with EMA-smoothed track embeddings.
+  use_appearance: false
+  appearance_weight: 0.25      # StrongSORT-style blend (0=IoU only, 1=appearance only)
+  appearance_ema:    0.9       # Deep OC-SORT default; alpha on existing track embedding
 kalman_filter:
   initial_covariance:
     p_position: 10.0

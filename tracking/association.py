@@ -203,3 +203,90 @@ def build_iou_cost_matrix_with_gate(
     # Gate: force high cost for near-zero-IoU pairs
     cost[cost > max_iou_distance] = max_iou_distance + 1.0
     return cost
+
+
+# ---------------------------------------------------------------------------
+# Appearance cost (cosine distance between L2-normalised embeddings)
+# ---------------------------------------------------------------------------
+
+def appearance_distance(
+    tracks:               list,
+    detection_embeddings: list,
+) -> np.ndarray:
+    """
+    Build a (len(tracks), len(detections)) cosine-distance cost matrix
+    between track embeddings and detection embeddings.
+
+    Convention
+    ----------
+    Embeddings are assumed L2-normalised (the DINOv2 extractor enforces
+    this). Cosine distance is then `1 - dot(a, b)` and lies in [0, 2].
+    We clip to [0, 1] before blending with IoU cost: in practice
+    foundation-model embeddings of *different* objects sit at cosine
+    similarity ~0.3-0.7, never near -1, so the [0, 1] range covers all
+    realistic cases and keeps the blended cost on the same scale as IoU.
+
+    Missing-embedding handling
+    --------------------------
+    Either a track or a detection may have no embedding (e.g. a track
+    that has never been matched yet, or a detection whose crop was
+    too small to embed). Those entries get cost = 1.0 so the matcher
+    ignores them via the appearance term and decides on IoU alone.
+
+    Returns
+    -------
+    (T, D) float64 in [0, 1].
+    """
+    T = len(tracks)
+    D = len(detection_embeddings)
+    out = np.ones((T, D), dtype=np.float64)
+    if T == 0 or D == 0:
+        return out
+    for i, tr in enumerate(tracks):
+        t_emb = getattr(tr, "embedding", None)
+        if t_emb is None:
+            continue
+        t_vec = np.asarray(t_emb, dtype=np.float64).reshape(-1)
+        for j, d_emb in enumerate(detection_embeddings):
+            if d_emb is None:
+                continue
+            d_vec = np.asarray(d_emb, dtype=np.float64).reshape(-1)
+            if t_vec.shape != d_vec.shape:
+                continue
+            sim = float(np.dot(t_vec, d_vec))
+            out[i, j] = float(np.clip(1.0 - sim, 0.0, 1.0))
+    return out
+
+
+def build_combined_cost_matrix(
+    tracks:               list,
+    detections:           list,
+    detection_embeddings: list,
+    appearance_weight:    float = 0.25,
+    max_iou_distance:     float = 0.9,
+) -> np.ndarray:
+    """
+    Blended IoU + appearance cost matrix.
+
+        cost = (1 - w) * iou_cost + w * appearance_cost
+
+    The IoU gate from `build_iou_cost_matrix_with_gate` is still
+    applied AFTER the blend, so a track-detection pair that's
+    geometrically infeasible (near-zero IoU) is rejected regardless of
+    how similar the appearances are. This is intentional: motion
+    consistency is more reliable per-frame than appearance, and gating
+    on IoU stops a confusable lookalike across the frame from
+    hijacking a track when no real geometric candidate exists.
+
+    appearance_weight = 0.0 collapses to the IoU-only baseline.
+    Typical published values: 0.25 (StrongSORT) to 0.5 (Deep OC-SORT).
+    """
+    iou_cost = iou_distance(tracks, detections)
+    if not tracks or not detections:
+        return iou_cost
+    app_cost = appearance_distance(tracks, detection_embeddings)
+    w = float(np.clip(appearance_weight, 0.0, 1.0))
+    blended = (1.0 - w) * iou_cost + w * app_cost
+    # Gate AFTER blending (see docstring above).
+    blended[iou_cost > max_iou_distance] = max_iou_distance + 1.0
+    return blended
