@@ -331,6 +331,8 @@ class _FakeRR:
     def Clear(self, recursive=False):      return {"type": "Clear",
                                                     "recursive": recursive}
     def Scalars(self, *a, **k):            return {"type": "Scalars"}
+    def Pinhole(self, **kw):               return {"type": "Pinhole", **kw}
+    def Transform3D(self, **kw):           return {"type": "Transform3D", **kw}
 
     class _BoxFormat:
         XYXY = "XYXY"
@@ -490,6 +492,98 @@ class TestRerunShowcaseLayers:
         assert "world/rooms/polygons"    not in paths
         assert "world/rooms/labels"      not in paths
         assert "world/camera/semantic"   not in paths
+        # Same goes for the camera-pose layer when no pose is provided.
+        assert "world/ego_trajectory"    not in paths
+
+
+# ---------------------------------------------------------------------------
+# TestRerunCameraPose — Pinhole + Transform3D + ego trajectory
+# ---------------------------------------------------------------------------
+
+class TestRerunCameraPose:
+
+    def _pose(self, t=(0.0, 0.0, 0.0)):
+        from perception.pose_estimator import CameraPose
+        return CameraPose(
+            R=np.eye(3),
+            t=np.asarray(t, dtype=np.float64),
+            timestamp=0.0, frame_idx=0, source="test",
+        )
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def _by_type(self, fake, ptype):
+        return [c for c in fake.calls if c["primitive"]["type"] == ptype]
+
+    def test_pinhole_logged_once_per_signature(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [], camera_pose=self._pose())
+        logger.log_frame(make_frame(), [], [], camera_pose=self._pose((0.1, 0, 0)))
+        pinholes = self._by_type(logger._rr, "Pinhole")
+        # Logged once — intrinsics didn't change between frames.
+        assert len(pinholes) == 1
+        # Mounted under world/camera (so the image entity inherits the
+        # 3D positioning Rerun derives from Pinhole + Transform3D).
+        assert pinholes[0]["path"] == "world/camera"
+
+    def test_resolution_change_relogs_pinhole(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(w=640, h=480), [], [], camera_pose=self._pose())
+        logger.log_frame(make_frame(w=320, h=240), [], [], camera_pose=self._pose())
+        pinholes = self._by_type(logger._rr, "Pinhole")
+        assert len(pinholes) == 2
+
+    def test_transform3d_logged_each_frame(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [], camera_pose=self._pose((0.0, 0, 0)))
+        logger.log_frame(make_frame(), [], [], camera_pose=self._pose((0.1, 0, 0)))
+        logger.log_frame(make_frame(), [], [], camera_pose=self._pose((0.2, 0, 0)))
+        transforms = self._by_type(logger._rr, "Transform3D")
+        assert len(transforms) == 3
+        # Translations match what we passed in (within float32 rounding).
+        ts = np.array(
+            [t["primitive"]["translation"] for t in transforms],
+            dtype=np.float64,
+        )
+        np.testing.assert_allclose(
+            ts, [[0.0, 0, 0], [0.1, 0, 0], [0.2, 0, 0]], atol=1e-6,
+        )
+
+    def test_trajectory_logged_after_two_frames(self, cfg):
+        logger = self._ready_logger(cfg)
+        # First frame: only one point in the buffer → no polyline yet.
+        logger.log_frame(make_frame(), [], [], camera_pose=self._pose((0, 0, 0)))
+        assert not self._by_path(logger._rr, "world/ego_trajectory")
+        # Second frame: two points → polyline emitted.
+        logger.log_frame(make_frame(), [], [], camera_pose=self._pose((1, 0, 0)))
+        traj_calls = self._by_path(logger._rr, "world/ego_trajectory")
+        assert traj_calls
+        prim = traj_calls[-1]["primitive"]
+        assert prim["type"] == "LineStrips3D"
+        assert prim["n"] == 1   # one polyline
+
+    def test_trajectory_deque_bounded(self, cfg):
+        logger = self._ready_logger(cfg)
+        # 5 calls — deque should hold all 5 (maxlen=2000).
+        for k in range(5):
+            logger.log_frame(make_frame(), [], [],
+                             camera_pose=self._pose((float(k), 0, 0)))
+        assert len(logger._ego_trajectory) == 5
+
+    def test_no_pose_means_no_camera_entities(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [])  # no camera_pose
+        assert not self._by_type(logger._rr, "Pinhole")
+        assert not self._by_type(logger._rr, "Transform3D")
+        assert not [c for c in logger._rr.calls
+                    if c["path"] == "world/ego_trajectory"]
 
 
 class TestWSLHostDetect:

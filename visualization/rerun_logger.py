@@ -41,6 +41,7 @@ from __future__ import annotations
 import colorsys
 import logging
 import math
+from collections import deque
 from pathlib import Path
 from typing import List, Optional
 
@@ -153,6 +154,14 @@ class RerunLogger:
         # SemanticMask arrives — Rerun's class-table semantics.
         self._semantic_annotation_logged: bool = False
         self._semantic_class_signature: Optional[tuple] = None
+        # Same idea for the camera Pinhole: intrinsics don't change at
+        # runtime, so log once when the first frame with a pose arrives.
+        self._pinhole_logged: bool = False
+        self._pinhole_signature: Optional[tuple] = None
+        # Rolling buffer of past camera positions in world frame.
+        # 2000 samples ≈ 67 s at 30 Hz of visual updates — long enough
+        # for a showcase loop without unbounded memory growth.
+        self._ego_trajectory: deque = deque(maxlen=2000)
 
     # ------------------------------------------------------------------
     # Connection
@@ -220,6 +229,7 @@ class RerunLogger:
         occupancy_3d=None,
         rooms=None,
         semantic_mask=None,
+        camera_pose=None,
     ) -> None:
         """
         Log all visual data for one frame.
@@ -237,6 +247,13 @@ class RerunLogger:
             # Timeline — 0.31.4 uses rr.set_time()
             rr.set_time("frame_idx", sequence=frame.frame_idx)
             rr.set_time("wall_time", duration=frame.timestamp)
+
+            # Camera pose first — sets the Pinhole + Transform3D on
+            # `world/camera` so the image that follows renders as a 3D
+            # frustum in the right place, in the same world as the
+            # voxel cloud / rooms / trajectory.
+            if camera_pose is not None:
+                self._log_camera_pose(rr, frame, camera_pose)
 
             self._log_image(rr, frame)
             self._log_detections(rr, detections)
@@ -493,6 +510,78 @@ class RerunLogger:
             )
         except Exception as e:
             log.debug("Semantic log failed: %s", e)
+
+    def _log_camera_pose(self, rr, frame, camera_pose) -> None:
+        """
+        Position the camera entity in the world frame and emit its
+        intrinsics. With Pinhole + Transform3D on `world/camera`, Rerun
+        renders the image as a 3D frustum coinciding with the camera's
+        location, so it sits naturally alongside the voxel cloud and
+        room polygons.
+
+        Also accumulates the camera's world position into a rolling
+        trajectory buffer and re-emits it as a Polyline3D each frame
+        — the visible "ego path" line in the showcase.
+        """
+        intr = frame.intrinsics
+        # Pinhole is static (intrinsics don't change at runtime). Log
+        # once, and only re-log if the resolution actually changes
+        # (e.g. mid-run camera swap).
+        signature = (float(intr.fx), float(intr.fy),
+                     float(intr.cx), float(intr.cy),
+                     int(intr.width), int(intr.height))
+        try:
+            if not self._pinhole_logged or signature != self._pinhole_signature:
+                rr.log(
+                    "world/camera",
+                    rr.Pinhole(
+                        focal_length=[float(intr.fx), float(intr.fy)],
+                        principal_point=[float(intr.cx), float(intr.cy)],
+                        resolution=[int(intr.width), int(intr.height)],
+                    ),
+                    static=True,
+                )
+                self._pinhole_logged = True
+                self._pinhole_signature = signature
+        except Exception as e:
+            log.debug("Pinhole log failed: %s", e)
+
+        # CameraPose stores R (world ← camera) and t (camera origin in
+        # world). That's exactly the entity-to-parent transform Rerun
+        # wants on a child entity, so the default `from_parent=False`
+        # is correct — no axis flipping needed.
+        try:
+            rr.log(
+                "world/camera",
+                rr.Transform3D(
+                    translation=camera_pose.t.astype(np.float32),
+                    mat3x3=camera_pose.R.astype(np.float32),
+                ),
+            )
+        except Exception as e:
+            log.debug("Transform3D log failed: %s", e)
+
+        # Accumulate trajectory + emit polyline (kept in sync regardless
+        # of whether the transform log succeeded).
+        self._ego_trajectory.append(camera_pose.t.copy().astype(np.float32))
+        self._log_ego_trajectory(rr)
+
+    def _log_ego_trajectory(self, rr) -> None:
+        """Emit the rolling camera-position polyline at world/ego_trajectory."""
+        if len(self._ego_trajectory) < 2:
+            return
+        try:
+            pts = np.asarray(self._ego_trajectory, dtype=np.float32)
+            rr.log(
+                "world/ego_trajectory",
+                rr.LineStrips3D(
+                    [pts],
+                    colors=[(60, 220, 60, 220)],
+                    radii=0.015,
+                ),
+            )
+        except Exception as e:
+            log.debug("Trajectory log failed: %s", e)
 
     # ------------------------------------------------------------------
     # Metrics

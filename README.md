@@ -428,9 +428,13 @@ flags, additionally:
 - **`semantic.enabled: true` + `type: mask2former`** → per-pixel
   semantic-class overlay at `world/camera/semantic` (SegmentationImage
   + AnnotationContext for the class table)
+- **`pose_estimator.type: dpvo` (or VIO)** → camera image rendered as
+  a 3D frustum positioned in the world via `rr.Pinhole` + `rr.Transform3D`,
+  plus the rolling ego-trajectory as `LineStrips3D` at
+  `world/ego_trajectory`. With this enabled, the image, voxels,
+  rooms, and tracks all live in one 3D world view in the Rerun viewer.
 - Per-track persistent_id (WorldMap re-association), metric depth,
-  ego-trajectory (DPVO or VIO), frame-level metrics (detector /
-  tracker latency, FPS, lost-track count)
+  frame-level metrics (detector / tracker latency, FPS, lost-track count)
 
 Enable everything for a maximal showcase by adding the layer flags
 to your config and running `scripts/record_demo.py` as above.
@@ -803,7 +807,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               663 unit tests — all hardware-free; integration
+    tests/               669 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 

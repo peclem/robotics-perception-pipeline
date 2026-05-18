@@ -643,6 +643,7 @@ class Pipeline:
                 occupancy_3d=occ_3d,
                 rooms=rooms,
                 semantic_mask=semantic_mask,
+                camera_pose=camera_pose,
             )
 
             t_total = time.monotonic() - t_frame_start
