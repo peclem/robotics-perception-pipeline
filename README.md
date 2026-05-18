@@ -359,6 +359,77 @@ graph, see "ROS2 integration" further down.
 
 ---
 
+## Recording a demo / showing off the perception
+
+Two artefacts to share: a **Rerun `.rrd` recording** (interactive
+3D scene + tracks + uncertainty, shareable via Rerun's hosted viewer
+at https://rerun.io/viewer) and an **annotated `.mp4`** (works
+everywhere — GitHub READMEs, social media, slides).
+
+Both are produced by a single run.
+
+### From a video file
+
+    # Annotated mp4 (always) + .rrd (when --rerun-save is passed)
+    python3 launch.py \
+        --source video --input data/your_clip.mp4 \
+        --output data/your_clip_annotated.mp4 \
+        --rerun-save data/your_clip.rrd
+
+Drop `your_clip.rrd` into https://rerun.io/viewer to share a link;
+upload `your_clip_annotated.mp4` to YouTube, GitHub release, or
+embed via README.
+
+### From a USB webcam
+
+    python3 launch.py --source webcam --rerun-save data/webcam_demo.rrd
+
+Pipe through `--output` if you also want the mp4.
+
+### From an iPhone (DroidCam / Larix Broadcaster / OBS NDI)
+
+Install a "phone as IP camera" app on the phone, point it at your
+PC's IP, then treat the resulting stream URL like a video file:
+
+    python3 launch.py --source video --input rtsp://<phone-ip>:1935/live \
+        --rerun-save data/iphone_demo.rrd
+
+(Tested with the iPhone 11 series; newer Pro models add LiDAR but
+the perception stack is fine on monocular for the showcase.)
+
+### From the Meta glasses
+
+Stream the glasses' camera + IMU to the PC over BT/WiFi via the
+Meta SDK, then run as if it were a video source. The IMU stream is
+optional — set `imu.type: synthetic` (or `null`) until the BT pipe
+to the real IMU is wired.
+
+### Recording shortcuts
+
+`scripts/record_demo.py` is a thin wrapper that turns on Rerun
+recording with sensible defaults:
+
+    python3 scripts/record_demo.py --input data/your_clip.mp4 \
+        --out data/demo
+
+writes `data/demo.rrd` + `data/demo.mp4`.
+
+### What's visible in the recording
+
+By default: camera image, 2D detection + track boxes, KF velocity
+arrows, 2σ position-covariance ellipses. With the right config
+flags, additionally: per-track persistent_id (WorldMap re-association),
+metric depth, ego-trajectory (DPVO or VIO), and frame-level metrics
+(detector/tracker latency, FPS, lost-track count).
+
+Voxel-cloud + room-polygon rendering in Rerun is **not yet wired**
+— the data is produced by `Occupancy3DBuilder` / `RoomLayer` but
+the Rerun logger doesn't yet visualise them. Deferred to a follow-up
+visualization session; the recording still demonstrates the
+detection / tracking / depth / pose / spatial-memory layers.
+
+---
+
 ## DPVO setup (optional, for `pose_estimator.type: dpvo`)
 
 DPVO is a custom CUDA-extension PyTorch package. On the project's
