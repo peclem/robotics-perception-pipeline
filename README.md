@@ -55,8 +55,11 @@ marked. Unimplemented components and their integration points are identified.
     ║                               Neural backend (IGEV / Foundation- ║
     ║                               Stereo) pending.                   ║
     ║  [✓] IMU pre-integration      Forster (2017) ΔR/Δv/Δp +         ║
-    ║                               covariance Jacobians. Bias-free   ║
-    ║                               v1; VIO fuser pending.            ║
+    ║                               covariance + bias Jacobians.      ║
+    ║  [✓] VIO fuser                Error-state EKF (15-D), Joseph    ║
+    ║                               update; consumes preint + visual  ║
+    ║                               pose. Loose coupling, no live     ║
+    ║                               pipeline wiring yet.              ║
     ║  [ ] Semantic segmentation    —                                  ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
@@ -609,7 +612,8 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           extractor (Null + DINOv2), IMU interface
                           (Null + Synthetic), TransformTree, typed config
     tracking/            ByteTrack, association, motion compensation, Track
-    state_estimation/    Kalman Filter, Extended KF, NIS/NEES
+    state_estimation/    Kalman Filter, Extended KF, NIS/NEES,
+                          IMU pre-integration, visual-inertial EKF
                           diagnostics, IMU pre-integration (Forster 2017)
     world_model/         SceneGraph, ObjectState (+ position_world,
                           stability, persistent_id), spatial queries
@@ -633,7 +637,7 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               558 unit tests — all hardware-free; integration
+    tests/               575 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 
@@ -667,18 +671,19 @@ Adding an OSNet or FastReID backbone as an AppearanceExtractor module
 enables track re-identification after long occlusion without changes
 to the tracker or world model.
 
-**IMU-VIO fusion.** The IMU pipe is built: `IMUInterface` ABC,
-`SyntheticIMU` backend, Forster (2017) pre-integration with
-`PreintegratedMeasurement` (ΔR, Δv, Δp + 9×9 covariance). What's
-missing is the *fuser* — an error-state EKF or factor-graph
-back-end that consumes pre-integrated measurements between camera
-keyframes and updates ego-pose. Practical options when hardware
-lands: switch DPVO out for a VIO backbone (OpenVINS, VINS-Fusion,
-ORB-SLAM3 with IMU), OR write a custom error-state EKF that fuses
-DPVO's pose updates with the pre-integrated IMU constraints. v1
-of pre-integration assumes zero/pre-calibrated biases; adding
-first-order bias Jacobians (∂ΔR/∂b_g, ∂Δv/∂b_a, ∂Δp/∂b_a) is the
-next math step.
+**IMU-VIO fusion.** Full pipe: `IMUInterface` ABC + `SyntheticIMU`
+backend, Forster (2017) pre-integration with `PreintegratedMeasurement`
+(ΔR, Δv, Δp + 9×9 covariance + bias Jacobians for first-order
+correction), and now the *fuser* — a loosely-coupled error-state EKF
+(`state_estimation/visual_inertial_ekf.py`). 15-D error state
+[δp, δv, δθ, δb_g, δb_a]; predict consumes one `PreintegratedMeasurement`
+between visual frames; update consumes a 6-DOF `CameraPose` from any
+`PoseEstimator` (DPVO ships today; OpenVINS / VINS-Fusion / ORB-SLAM3
+slot into the same ABC). Joseph-form covariance update for PSD safety.
+Camera = IMU body in v1 (extrinsic foldable via TransformTree). What's
+NOT in this revision: live pipeline orchestration (IMU producer + visual
+loop sync + ROS2 fused-pose publisher), gravity-aligned initialiser,
+chi-square outlier rejection on the visual update.
 
 **Neural stereo backend.** `StereoSGBMDepthEstimator` (classical
 cv2.StereoSGBM) ships today and is genuinely the right pick for CPU-

@@ -552,6 +552,41 @@ class PoseEstimatorConfig:
         return asdict(self)
 
 @dataclass
+class VIOConfig:
+    """
+    Visual-inertial error-state EKF tuning. Mirrors
+    state_estimation.visual_inertial_ekf.VIOConfig — the dataclass is
+    duplicated here so config validation lives next to all the other
+    typed config and the EKF stays standalone.
+
+    enabled
+        Master switch; reserved for when the live pipeline wires the
+        fuser in. The EKF class itself is usable without this — it's a
+        pure-Python component.
+    gravity_w
+        World-frame gravity vector. Default Z-up world → -9.81 along Z.
+
+    Validation: every std / random walk must be positive.
+    """
+    enabled:                  bool  = False
+    init_position_std_m:      float = 0.10
+    init_velocity_std_mps:    float = 0.10
+    init_orientation_std_rad: float = 0.05
+    init_bias_gyro_std:       float = 1e-3
+    init_bias_accel_std:      float = 1e-2
+    bias_gyro_random_walk:    float = 1e-5
+    bias_accel_random_walk:   float = 1e-4
+    visual_position_std_m:    float = 0.05
+    visual_orientation_std_rad: float = 0.02
+    gravity_w:                List[float] = field(
+        default_factory=lambda: [0.0, 0.0, -9.81]
+    )
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class PipelineConfig:
     """
     Fully typed pipeline configuration.
@@ -577,6 +612,7 @@ class PipelineConfig:
     world_map:              WorldMapConfig             = field(default_factory=WorldMapConfig)
     health_monitor:         HealthMonitorConfig        = field(default_factory=HealthMonitorConfig)
     imu:                    IMUConfig                  = field(default_factory=IMUConfig)
+    vio:                    VIOConfig                  = field(default_factory=VIOConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -606,6 +642,7 @@ class PipelineConfig:
             "world_map":              self.world_map.as_dict(),
             "health_monitor":         self.health_monitor.as_dict(),
             "imu":                    self.imu.as_dict(),
+            "vio":                    self.vio.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -918,6 +955,18 @@ def _validate(raw: dict) -> None:
     _require_positive_float(errors, imu_raw, "imu.sigma_gyro_n")
     _require_positive_float(errors, imu_raw, "imu.sigma_accel_n")
 
+    # VIO error-state EKF
+    vio_raw = raw.get("vio", {})
+    for k in ("init_position_std_m", "init_velocity_std_mps",
+              "init_orientation_std_rad", "init_bias_gyro_std",
+              "init_bias_accel_std", "bias_gyro_random_walk",
+              "bias_accel_random_walk", "visual_position_std_m",
+              "visual_orientation_std_rad"):
+        _require_positive_float(errors, vio_raw, f"vio.{k}")
+    g_w = vio_raw.get("gravity_w")
+    if g_w is not None and (not isinstance(g_w, list) or len(g_w) != 3):
+        errors.append("vio.gravity_w must be a list of 3 floats (world-frame gravity).")
+
     # World map
     wmap_raw = raw.get("world_map", {})
     _require_positive_float(errors, wmap_raw, "world_map.spatial_gate_m")
@@ -991,6 +1040,7 @@ def _build(raw: dict) -> PipelineConfig:
     wmap = raw.get("world_map", {})
     hm = raw.get("health_monitor", {})
     imu = raw.get("imu", {})
+    vio = raw.get("vio", {})
 
     static_ext_raw = cf.get("static_extrinsics", []) or []
     static_extrinsics = [
@@ -1204,5 +1254,21 @@ def _build(raw: dict) -> PipelineConfig:
             synthetic_noise_std_gyro=
                               float(imu.get("synthetic_noise_std_gyro", 0.0)),
             synthetic_seed=   int(imu.get("synthetic_seed", 0)),
+        ),
+        vio=VIOConfig(
+            enabled=                  bool(vio.get("enabled", False)),
+            init_position_std_m=      float(vio.get("init_position_std_m",      0.10)),
+            init_velocity_std_mps=    float(vio.get("init_velocity_std_mps",    0.10)),
+            init_orientation_std_rad= float(vio.get("init_orientation_std_rad", 0.05)),
+            init_bias_gyro_std=       float(vio.get("init_bias_gyro_std",       1e-3)),
+            init_bias_accel_std=      float(vio.get("init_bias_accel_std",      1e-2)),
+            bias_gyro_random_walk=    float(vio.get("bias_gyro_random_walk",    1e-5)),
+            bias_accel_random_walk=   float(vio.get("bias_accel_random_walk",   1e-4)),
+            visual_position_std_m=    float(vio.get("visual_position_std_m",    0.05)),
+            visual_orientation_std_rad=
+                                      float(vio.get("visual_orientation_std_rad", 0.02)),
+            gravity_w=                [float(x) for x in vio.get(
+                "gravity_w", [0.0, 0.0, -9.81]
+            )],
         ),
     )

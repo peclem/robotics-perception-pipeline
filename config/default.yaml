@@ -144,6 +144,23 @@ imu:
   synthetic_noise_std_accel: 0.0
   synthetic_noise_std_gyro:  0.0
   synthetic_seed: 0
+vio:
+  # Visual-inertial error-state EKF (state_estimation/visual_inertial_ekf.py).
+  # 15-D error state: [δp, δv, δθ, δb_g, δb_a]. Predicts with pre-integrated
+  # IMU, updates with a 6-DOF visual pose. `enabled` is reserved for when
+  # the live pipeline wires the fuser in — the EKF class is usable today
+  # without it (pure Python, no live integration yet).
+  enabled: false
+  init_position_std_m:        0.10
+  init_velocity_std_mps:      0.10
+  init_orientation_std_rad:   0.05      # ≈ 3°
+  init_bias_gyro_std:         1.0e-3    # rad/s
+  init_bias_accel_std:        1.0e-2    # m/s²
+  bias_gyro_random_walk:      1.0e-5    # rad/s · √Hz
+  bias_accel_random_walk:     1.0e-4    # m/s² · √Hz
+  visual_position_std_m:      0.05
+  visual_orientation_std_rad: 0.02      # ≈ 1.1°
+  gravity_w: [0.0, 0.0, -9.81]          # world-frame gravity (Z-up by default)
 health_monitor:
   enabled: true             # per-stage latency budgets + diagnostics
   warn_after:  3            # consecutive budget breaches → WARN
