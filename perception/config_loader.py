@@ -491,6 +491,41 @@ class OccupancyGridConfig:
 
 
 @dataclass
+class Occupancy3DConfig:
+    """
+    Sparse 3D obstacle grid parameters. See world_model.Occupancy3DParams
+    for the matching builder dataclass; this just exposes the same knobs
+    in the validated config layer.
+
+    Defaults: 20×20×3 m volume centred on the robot in XY, spanning
+    -0.5..+2.5 m in Z (workspace for a standing person / table-height
+    manipulator), at 10 cm resolution. ~1.2 M voxels of extent, but the
+    builder only stores the occupied ones.
+    """
+    enabled:             bool             = False
+    resolution_m:        float            = 0.10
+    size_x_m:            float            = 20.0
+    size_y_m:            float            = 20.0
+    size_z_m:            float            = 3.0
+    origin_x_m:          float            = -10.0
+    origin_y_m:          float            = -10.0
+    origin_z_m:          float            = -0.5
+    default_inflation_m: float            = 0.5
+    min_inflation_m:     float            = 0.10
+    per_class_inflation_m: Dict[str, float] = field(default_factory=lambda: {
+        "person":     0.40,
+        "bicycle":    0.60,
+        "car":        2.00,
+        "motorcycle": 0.80,
+        "bus":        3.00,
+        "truck":      2.50,
+    })
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class PoseEstimatorConfig:
     """
     Selects which PoseEstimator backend to instantiate.
@@ -537,6 +572,7 @@ class PipelineConfig:
     coordinate_frames:      CoordinateFramesConfig     = field(default_factory=CoordinateFramesConfig)
     pose_estimator:         PoseEstimatorConfig        = field(default_factory=PoseEstimatorConfig)
     occupancy_grid:         OccupancyGridConfig        = field(default_factory=OccupancyGridConfig)
+    occupancy_3d:           Occupancy3DConfig          = field(default_factory=Occupancy3DConfig)
     appearance:             AppearanceConfig           = field(default_factory=AppearanceConfig)
     world_map:              WorldMapConfig             = field(default_factory=WorldMapConfig)
     health_monitor:         HealthMonitorConfig        = field(default_factory=HealthMonitorConfig)
@@ -565,6 +601,7 @@ class PipelineConfig:
             "coordinate_frames":      self.coordinate_frames.as_dict(),
             "pose_estimator":         self.pose_estimator.as_dict(),
             "occupancy_grid":         self.occupancy_grid.as_dict(),
+            "occupancy_3d":           self.occupancy_3d.as_dict(),
             "appearance":             self.appearance.as_dict(),
             "world_map":              self.world_map.as_dict(),
             "health_monitor":         self.health_monitor.as_dict(),
@@ -901,6 +938,15 @@ def _validate(raw: dict) -> None:
     _require_positive_float(errors, og_raw, "occupancy_grid.default_inflation_m")
     _require_positive_float(errors, og_raw, "occupancy_grid.min_inflation_m")
 
+    # 3D occupancy
+    o3_raw = raw.get("occupancy_3d", {})
+    _require_positive_float(errors, o3_raw, "occupancy_3d.resolution_m")
+    _require_positive_float(errors, o3_raw, "occupancy_3d.size_x_m")
+    _require_positive_float(errors, o3_raw, "occupancy_3d.size_y_m")
+    _require_positive_float(errors, o3_raw, "occupancy_3d.size_z_m")
+    _require_positive_float(errors, o3_raw, "occupancy_3d.default_inflation_m")
+    _require_positive_float(errors, o3_raw, "occupancy_3d.min_inflation_m")
+
     # Visualization
     vis = raw.get("visualization", {})
     vas = vis.get("velocity_arrow_scale", 0.5)
@@ -940,6 +986,7 @@ def _build(raw: dict) -> PipelineConfig:
     cf = raw.get("coordinate_frames", {})
     pe = raw.get("pose_estimator", {})
     og = raw.get("occupancy_grid", {})
+    o3 = raw.get("occupancy_3d",   {})
     ap = raw.get("appearance", {})
     wmap = raw.get("world_map", {})
     hm = raw.get("health_monitor", {})
@@ -1103,6 +1150,22 @@ def _build(raw: dict) -> PipelineConfig:
                 str(k): float(v) for k, v in
                 (og.get("per_class_inflation_m") or {}).items()
             } or OccupancyGridConfig().per_class_inflation_m,
+        ),
+        occupancy_3d=Occupancy3DConfig(
+            enabled=               bool(o3.get("enabled", False)),
+            resolution_m=          float(o3.get("resolution_m", 0.10)),
+            size_x_m=              float(o3.get("size_x_m", 20.0)),
+            size_y_m=              float(o3.get("size_y_m", 20.0)),
+            size_z_m=              float(o3.get("size_z_m", 3.0)),
+            origin_x_m=            float(o3.get("origin_x_m", -10.0)),
+            origin_y_m=            float(o3.get("origin_y_m", -10.0)),
+            origin_z_m=            float(o3.get("origin_z_m", -0.5)),
+            default_inflation_m=   float(o3.get("default_inflation_m", 0.5)),
+            min_inflation_m=       float(o3.get("min_inflation_m", 0.10)),
+            per_class_inflation_m={
+                str(k): float(v) for k, v in
+                (o3.get("per_class_inflation_m") or {}).items()
+            } or Occupancy3DConfig().per_class_inflation_m,
         ),
         appearance=AppearanceConfig(
             type=   str(ap.get("type", "null")),

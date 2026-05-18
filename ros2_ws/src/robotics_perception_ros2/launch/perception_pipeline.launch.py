@@ -102,6 +102,13 @@ def generate_launch_description():
         ),
         Node(
             package="robotics_perception_ros2",
+            executable="occupancy_3d_node",
+            name="occupancy_3d",
+            output="screen",
+            parameters=common_params,
+        ),
+        Node(
+            package="robotics_perception_ros2",
             executable="health_monitor_node",
             name="health_monitor",
             output="screen",

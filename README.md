@@ -98,6 +98,10 @@ marked. Unimplemented components and their integration points are identified.
     ║                               2σ-covariance inflation per       ║
     ║                               object, depth-projected when      ║
     ║                               available                         ║
+    ║  [✓] 3D occupancy             Sparse voxel grid →               ║
+    ║                               sensor_msgs/PointCloud2           ║
+    ║                               (always) + octomap_msgs/Octomap   ║
+    ║                               (when octomap+_msgs installed)    ║
     ║  [✓] Per-class spatial memory STATIC / SEMI_STATIC / DYNAMIC    ║
     ║                               classification (class prior +     ║
     ║                               motion override). STATIC objects  ║
@@ -127,6 +131,8 @@ marked. Unimplemented components and their integration points are identified.
     ║  ROS2 API:                                                       ║
     ║    /perception/scene    vision_msgs/Detection3DArray             ║
     ║    /perception/costmap  nav_msgs/OccupancyGrid (dynamic layer)   ║
+    ║    /perception/voxels   sensor_msgs/PointCloud2 (3D occupancy)   ║
+    ║    /perception/octomap  octomap_msgs/Octomap   (when installed)  ║
     ║    /tf                  map → camera_frame (when ego-pose on)    ║
     ║                                                                  ║
     ║  [ ] Global planner           Nav2 / RRT / A*                   ║
@@ -383,6 +389,14 @@ behind both — the ROS2 layer is an adapter, not a port.
                                                     20×20 m @ 5 cm/cell,
                                                     2σ-inflated dynamic layer)
 
+    /perception/scene  ──▶ occupancy_3d_node   ──┬─▶ /perception/voxels
+                                                  │   (sensor_msgs/PointCloud2,
+                                                  │    sparse occupied centres)
+                                                  └─▶ /perception/octomap
+                                                      (octomap_msgs/Octomap,
+                                                       only if octomap +
+                                                       octomap_msgs installed)
+
     all /perception/* topics ──▶ health_monitor_node ──▶ /diagnostics
                                   (diagnostic_msgs/DiagnosticArray @ 1 Hz,
                                    per-stage OK/WARN/ERROR/STALE based on
@@ -518,6 +532,12 @@ All parameters are externalised in config/default.yaml.
         origin_x_m: -10.0   # grid centred at world origin
         origin_y_m: -10.0
         default_inflation_m: 0.5
+
+    occupancy_3d:
+        enabled: false      # publish sparse 3D voxels (PointCloud2 + optional Octomap)
+        resolution_m: 0.10  # 10 cm per voxel
+        size_z_m: 3.0       # vertical span (standing person / arm workspace)
+        origin_z_m: -0.5    # 0.5 m below ground → ceiling at +2.5 m
         per_class_inflation_m:
             person: 0.40
             car:    2.00
@@ -606,11 +626,14 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                             pose_node                Odometry + tf broadcast
                             scene_graph_node         Detection3DArray
                             occupancy_grid_node      OccupancyGrid (Nav2 costmap-ready)
+                            occupancy_3d_node        PointCloud2 + optional Octomap
+                            health_monitor_node      DiagnosticArray
+                            composite_node           single-process bundle (perf experiment)
     scripts/             Calibration, benchmark (MOT17, DPVO latency),
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               517 unit tests — all hardware-free; integration
+    tests/               558 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 

@@ -176,6 +176,24 @@ occupancy_grid:
     motorcycle: 0.80
     bus:        3.00
     truck:      2.50
+occupancy_3d:
+  enabled: false            # publish sparse 3D voxels (PointCloud2 + optional Octomap)
+  resolution_m: 0.10        # 10 cm per voxel; smaller → more memory + bigger PointCloud2
+  size_x_m: 20.0
+  size_y_m: 20.0
+  size_z_m: 3.0             # vertical span — workspace for standing person / arm
+  origin_x_m: -10.0
+  origin_y_m: -10.0
+  origin_z_m: -0.5          # 0.5 m below ground plane → ceiling at +2.5 m
+  default_inflation_m: 0.5
+  min_inflation_m: 0.10
+  per_class_inflation_m:    # spheres centred on each object's world position
+    person:     0.40
+    bicycle:    0.60
+    car:        2.00
+    motorcycle: 0.80
+    bus:        3.00
+    truck:      2.50
 benchmark:
   dataset_path: data/MOT17
   split: train
