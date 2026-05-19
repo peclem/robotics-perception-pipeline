@@ -890,6 +890,93 @@ class TestRerunTrackHistory:
         assert clears, "expected Clear on world/tracks/history when no tracks"
 
 
+# ---------------------------------------------------------------------------
+# TestRerunOccupancyGrid2D — top-down 2D occupancy grid layer
+# ---------------------------------------------------------------------------
+
+class TestRerunOccupancyGrid2D:
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def _grid(self, occupied_cells, h=8, w=10, value=100):
+        """Build a (H, W) int8 grid with the given (r, c) cells set."""
+        g = np.zeros((h, w), dtype=np.int8)
+        for r, c in occupied_cells:
+            g[r, c] = value
+        return g
+
+    def _params(self, resolution_m=0.5, origin_x_m=-2.5, origin_y_m=-2.0):
+        from world_model.occupancy_grid import OccupancyGridParams
+        return OccupancyGridParams(
+            resolution_m=resolution_m,
+            size_x_m=resolution_m * 10, size_y_m=resolution_m * 8,
+            origin_x_m=origin_x_m, origin_y_m=origin_y_m,
+        )
+
+    def test_occupied_cells_become_points3d_at_z0(self, cfg):
+        logger = self._ready_logger(cfg)
+        # One cell at (row=2, col=3); origin (-2.5, -2.0), res=0.5 →
+        # world (x = -2.5 + 3.5*0.5 = -0.75, y = -2.0 + 2.5*0.5 = -0.75, z = 0)
+        grid = self._grid([(2, 3)])
+        logger.log_frame(make_frame(), [], [],
+                         occupancy_grid_2d=(grid, self._params()))
+        calls = self._by_path(logger._rr, "world/occupancy_grid")
+        assert calls
+        prim = calls[-1]["primitive"]
+        assert prim["type"] == "Points3D"
+        positions = prim["positions"]
+        assert positions.shape == (1, 3)
+        np.testing.assert_allclose(positions[0], [-0.75, -0.75, 0.0], atol=1e-6)
+
+    def test_below_threshold_cells_dropped(self, cfg):
+        logger = self._ready_logger(cfg)
+        # Cells at 30 (free-ish) shouldn't render — only ≥50.
+        grid = self._grid([(2, 3)], value=30)
+        logger.log_frame(make_frame(), [], [],
+                         occupancy_grid_2d=(grid, self._params()))
+        clears = [c for c in self._by_path(logger._rr, "world/occupancy_grid")
+                  if c["primitive"]["type"] == "Clear"]
+        assert clears
+
+    def test_empty_grid_emits_clear(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [],
+                         occupancy_grid_2d=(self._grid([]),
+                                            self._params()))
+        clears = [c for c in self._by_path(logger._rr, "world/occupancy_grid")
+                  if c["primitive"]["type"] == "Clear"]
+        assert clears
+
+    def test_radius_matches_half_resolution(self, cfg):
+        logger = self._ready_logger(cfg)
+        grid = self._grid([(0, 0)])
+        logger.log_frame(make_frame(), [], [],
+                         occupancy_grid_2d=(grid,
+                                            self._params(resolution_m=0.5)))
+        prim = self._by_path(logger._rr, "world/occupancy_grid")[-1]["primitive"]
+        assert prim["radii"] == 0.25
+
+    def test_multiple_cells_each_emit_point(self, cfg):
+        logger = self._ready_logger(cfg)
+        grid = self._grid([(0, 0), (1, 1), (2, 2)])
+        logger.log_frame(make_frame(), [], [],
+                         occupancy_grid_2d=(grid, self._params()))
+        prim = self._by_path(logger._rr, "world/occupancy_grid")[-1]["primitive"]
+        assert prim["positions"].shape == (3, 3)
+
+    def test_no_occupancy_grid_arg_means_no_call(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [])
+        assert not self._by_path(logger._rr, "world/occupancy_grid")
+
+
 class TestWSLHostDetect:
 
     def test_explicit_host_unchanged(self):

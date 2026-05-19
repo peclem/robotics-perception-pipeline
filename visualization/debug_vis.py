@@ -210,12 +210,14 @@ class DebugVisualizer:
         camera_pose=None,
         scene_objects=None,
         world_map=None,
+        occupancy_grid_2d=None,
     ) -> None:
         self._rlog.log_frame(
             frame, detections, tracks,
             occupancy_3d=occupancy_3d, rooms=rooms,
             semantic_mask=semantic_mask, camera_pose=camera_pose,
             scene_objects=scene_objects, world_map=world_map,
+            occupancy_grid_2d=occupancy_grid_2d,
         )
         self._rlog.log_metrics(detect_ms, track_ms, fps, n_lost)
 

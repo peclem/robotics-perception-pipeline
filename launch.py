@@ -646,6 +646,12 @@ class Pipeline:
                 camera_pose=camera_pose,
                 scene_objects=scene_objects,
                 world_map=self._world_map,
+                occupancy_grid_2d=(
+                    (occ_grid_arr, self._occupancy_grid_builder.params)
+                    if (occ_grid_arr is not None
+                        and self._occupancy_grid_builder is not None)
+                    else None
+                ),
             )
 
             t_total = time.monotonic() - t_frame_start

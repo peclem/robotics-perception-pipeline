@@ -19,6 +19,7 @@ world/tracks/covariance     — 2σ position ellipses (LineStrips2D)
 world/tracks/history        — past centroid trail per track (LineStrips2D)
 world/world_map/visible     — WorldMap entries seen this frame (bright)
 world/world_map/remembered  — WorldMap entries not currently visible (faded)
+world/occupancy_grid        — top-down 2D occupancy grid (Points3D at z=0)
 metrics/detect_ms           — detector latency time series
 metrics/track_ms            — tracker latency time series
 metrics/fps                 — pipeline throughput time series
@@ -235,6 +236,7 @@ class RerunLogger:
         camera_pose=None,
         scene_objects=None,
         world_map=None,
+        occupancy_grid_2d=None,
     ) -> None:
         """
         Log all visual data for one frame.
@@ -276,6 +278,8 @@ class RerunLogger:
                 self._log_world_tracks(rr, scene_objects)
             if world_map is not None:
                 self._log_world_map(rr, world_map, scene_objects)
+            if occupancy_grid_2d is not None:
+                self._log_occupancy_grid(rr, occupancy_grid_2d)
 
         except Exception as exc:
             log.debug("Rerun log_frame error (suppressed): %s", exc)
@@ -753,6 +757,74 @@ class RerunLogger:
 
         _emit("world/world_map/visible",    vis_pos, vis_lab, vis_col, 0.11)
         _emit("world/world_map/remembered", rem_pos, rem_lab, rem_col, 0.06)
+
+    def _log_occupancy_grid(self, rr, occupancy_grid_2d) -> None:
+        """
+        Top-down 2D occupancy grid rendered at z=0 in the world frame.
+        `occupancy_grid_2d` is a (data, params) tuple — data is the
+        (H, W) int8 array returned by OccupancyGridBuilder.build(),
+        params is the OccupancyGridParams instance describing origin
+        and resolution.
+
+        Cells with occupancy ≥ 50 (the nav_msgs/OccupancyGrid "occupied"
+        threshold) become Points3D markers at their world-frame cell
+        centres. Cell colour darkens with occupancy probability so the
+        viewer can read the inflation falloff at the disk edges.
+        """
+        try:
+            data, params = occupancy_grid_2d
+        except (TypeError, ValueError):
+            return
+
+        if data is None or data.size == 0:
+            try:
+                rr.log("world/occupancy_grid", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+
+        occupied = np.argwhere(data >= 50)
+        if occupied.shape[0] == 0:
+            try:
+                rr.log("world/occupancy_grid", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+
+        res = float(params.resolution_m)
+        ox  = float(params.origin_x_m)
+        oy  = float(params.origin_y_m)
+        # data[r, c] → world (x = ox + c*res, y = oy + r*res)
+        rows = occupied[:, 0].astype(np.float32)
+        cols = occupied[:, 1].astype(np.float32)
+        xs = ox + (cols + 0.5) * res
+        ys = oy + (rows + 0.5) * res
+        zs = np.zeros_like(xs, dtype=np.float32)
+        positions = np.stack([xs, ys, zs], axis=1)
+
+        # Colour intensity tracks occupancy probability — full occupancy
+        # (≥99) renders solid orange; lower values (inflation tails) fade
+        # toward yellow. Alpha is fixed so the layer doesn't disappear
+        # when the grid is sparse.
+        vals = data[occupied[:, 0], occupied[:, 1]].astype(np.int32)
+        t = np.clip((vals - 50) / 50.0, 0.0, 1.0)          # 0 at 50, 1 at 100
+        r = (255 * np.ones_like(t)).astype(np.uint8)
+        g = (200 - 140 * t).astype(np.uint8)               # 200 → 60
+        b = (60 * (1 - t)).astype(np.uint8)                # 60 → 0
+        a = (210 * np.ones_like(t)).astype(np.uint8)
+        colors = np.stack([r, g, b, a], axis=1)
+
+        try:
+            rr.log(
+                "world/occupancy_grid",
+                rr.Points3D(
+                    positions=positions,
+                    radii=res * 0.5,
+                    colors=[tuple(c) for c in colors],
+                ),
+            )
+        except Exception as e:
+            log.debug("OccupancyGrid log failed: %s", e)
 
     # ------------------------------------------------------------------
     # Metrics
