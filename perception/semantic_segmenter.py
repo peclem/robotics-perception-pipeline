@@ -331,6 +331,15 @@ def drivable_mask(sm: SemanticMask) -> np.ndarray:
     return out
 
 
+def drivable_mask_mono8(sm: SemanticMask) -> np.ndarray:
+    """
+    Convenience wrapper for ROS2 / image-publisher consumers: returns
+    a uint8 (H, W) array with 255 for drivable pixels and 0 elsewhere —
+    the standard mono8 encoding for sensor_msgs/Image.
+    """
+    return drivable_mask(sm).astype(np.uint8) * 255
+
+
 # Cityscapes-name → StabilityClass for the "surface" classes (i.e., the
 # stuff an object might be *on*). DYNAMIC / SEMI_STATIC values are
 # rough priors — the downstream stability rule combines this with the

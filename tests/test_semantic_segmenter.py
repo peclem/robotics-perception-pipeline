@@ -166,6 +166,38 @@ class TestDrivableMask:
         assert not out.any()
 
 
+class TestDrivableMaskMono8:
+    """ROS2 mono8 image encoding wrapper around drivable_mask."""
+
+    def _cityscapes_sm(self, mask):
+        names = {0: "road", 1: "sidewalk", 2: "building", 9: "terrain",
+                 11: "person", 13: "car"}
+        return SemanticMask(
+            mask=mask, class_names=names, dataset="cityscapes",
+            timestamp=0.0, frame_idx=0,
+        )
+
+    def test_returns_uint8_with_255_and_0_only(self):
+        from perception.semantic_segmenter import drivable_mask_mono8
+        m = np.array([[0, 11], [1, 13]], dtype=np.int32)
+        out = drivable_mask_mono8(self._cityscapes_sm(m))
+        assert out.dtype == np.uint8
+        assert out.shape == m.shape
+        # 0 (road) and 1 (sidewalk) → 255; 11 (person) and 13 (car) → 0.
+        np.testing.assert_array_equal(out, [[255, 0], [255, 0]])
+
+    def test_unknown_dataset_returns_all_zero(self):
+        from perception.semantic_segmenter import drivable_mask_mono8
+        sm = SemanticMask(
+            mask=np.zeros((3, 3), dtype=np.int32),
+            class_names={0: "anything"}, dataset="bdd100k",
+            timestamp=0.0, frame_idx=0,
+        )
+        out = drivable_mask_mono8(sm)
+        assert out.dtype == np.uint8
+        assert (out == 0).all()
+
+
 # ---------------------------------------------------------------------------
 # Stability prior on segmenter classes
 # ---------------------------------------------------------------------------
