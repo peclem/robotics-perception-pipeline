@@ -12,6 +12,7 @@ set_time_seconds   → set_time("wall_time", duration=t)
 Entity hierarchy
 ----------------
 world/camera/image          — RGB camera frame
+world/camera/depth          — dense depth map (when depth.enabled)
 world/detections/boxes      — raw YOLOv8 output (grey)
 world/tracks/boxes          — confirmed KF-filtered tracks (colour-coded)
 world/tracks/velocity       — KF velocity vectors (Arrows2D)
@@ -237,6 +238,7 @@ class RerunLogger:
         scene_objects=None,
         world_map=None,
         occupancy_grid_2d=None,
+        depth_map=None,
     ) -> None:
         """
         Log all visual data for one frame.
@@ -263,6 +265,8 @@ class RerunLogger:
                 self._log_camera_pose(rr, frame, camera_pose)
 
             self._log_image(rr, frame)
+            if depth_map is not None:
+                self._log_depth_map(rr, depth_map)
             self._log_detections(rr, detections)
             self._log_tracks(rr, tracks)
 
@@ -290,6 +294,23 @@ class RerunLogger:
             rr.log("world/camera/image", rr.Image(rgb))
         except Exception as e:
             log.debug("Image log failed: %s", e)
+
+    def _log_depth_map(self, rr, depth_map: np.ndarray) -> None:
+        """
+        Dense metric depth map co-located with the camera image at
+        `world/camera/depth`. Rerun renders this as a heatmap aligned
+        to the image pixel grid and, in combination with the Pinhole
+        on `world/camera`, also back-projects each pixel into the 3D
+        scene as a coloured point cloud — the showcase view.
+
+        `meter=1.0` tells Rerun the values are already in metres so
+        scale bars read correctly.
+        """
+        try:
+            arr = np.asarray(depth_map, dtype=np.float32)
+            rr.log("world/camera/depth", rr.DepthImage(arr, meter=1.0))
+        except Exception as e:
+            log.debug("Depth log failed: %s", e)
 
     def _log_detections(self, rr, detections: List[Detection]) -> None:
         if not detections:

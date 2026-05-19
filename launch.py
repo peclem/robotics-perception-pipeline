@@ -652,6 +652,11 @@ class Pipeline:
                         and self._occupancy_grid_builder is not None)
                     else None
                 ),
+                depth_map=next(
+                    (e.depth_map for e in depth_estimates_list
+                     if e.depth_map is not None),
+                    None,
+                ),
             )
 
             t_total = time.monotonic() - t_frame_start

@@ -317,6 +317,10 @@ class _FakeRR:
 
     # Primitive constructors — return tagged dicts the test can inspect.
     def Image(self, arr):                  return {"type": "Image", "shape": arr.shape}
+    def DepthImage(self, arr, meter=1.0):  return {"type": "DepthImage",
+                                                    "shape": arr.shape,
+                                                    "meter": meter,
+                                                    "dtype": str(arr.dtype)}
     def Boxes2D(self, **kw):               return {"type": "Boxes2D", **kw}
     def Points3D(self, **kw):              return {"type": "Points3D", **kw}
     def LineStrips3D(self, strips, **kw):  return {"type": "LineStrips3D",
@@ -888,6 +892,46 @@ class TestRerunTrackHistory:
         clears = [c for c in self._by_path(logger._rr, "world/tracks/history")
                   if c["primitive"]["type"] == "Clear"]
         assert clears, "expected Clear on world/tracks/history when no tracks"
+
+
+# ---------------------------------------------------------------------------
+# TestRerunDepthMap — dense depth map heatmap at world/camera/depth
+# ---------------------------------------------------------------------------
+
+class TestRerunDepthMap:
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def test_depth_map_logged_as_depthimage_in_metres(self, cfg):
+        logger = self._ready_logger(cfg)
+        dm = np.full((4, 6), 2.5, dtype=np.float32)
+        logger.log_frame(make_frame(), [], [], depth_map=dm)
+        calls = self._by_path(logger._rr, "world/camera/depth")
+        assert calls
+        prim = calls[-1]["primitive"]
+        assert prim["type"] == "DepthImage"
+        assert prim["shape"] == (4, 6)
+        assert prim["meter"] == 1.0
+        assert prim["dtype"] == "float32"
+
+    def test_non_float32_input_is_coerced(self, cfg):
+        logger = self._ready_logger(cfg)
+        dm = (np.ones((3, 3)) * 1500).astype(np.uint16)   # mm-style ints
+        logger.log_frame(make_frame(), [], [], depth_map=dm)
+        prim = self._by_path(logger._rr, "world/camera/depth")[-1]["primitive"]
+        assert prim["dtype"] == "float32"
+
+    def test_no_depth_map_arg_means_no_call(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [])
+        assert not self._by_path(logger._rr, "world/camera/depth")
 
 
 # ---------------------------------------------------------------------------
