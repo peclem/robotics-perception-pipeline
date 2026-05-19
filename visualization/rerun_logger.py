@@ -250,10 +250,14 @@ class RerunLogger:
         """
         Log all visual data for one frame.
 
-        The new optional kwargs (occupancy_3d, rooms, semantic_mask)
-        carry data produced by the corresponding pipeline layers when
-        their config flags are enabled. Pass None to skip — the call
-        is then identical to the original 3-arg form.
+        Optional kwargs carry data produced by the corresponding
+        pipeline layers when their config flags are enabled. Each is
+        gated on a different feature (depth.enabled / semantic.enabled /
+        room_layer.enabled / occupancy_grid.enabled / occupancy_3d.enabled /
+        drivable_costmap.enabled / world_map.enabled / coordinate_frames.enabled),
+        so any combination of None values is valid. The caller (DebugVisualizer
+        and ultimately launch.py) wires each kwarg only when the producing
+        layer is actually running.
         """
         if not self._ready or self._rr is None:
             return

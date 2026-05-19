@@ -353,14 +353,6 @@ def write_results_markdown(
     _PCT_KEYS = {"MOTA", "MOTP", "IDF1", "HOTA", "DetA", "AssA", "LocA"}
     _INT_KEYS = {"FP", "FN", "IDSW"}
 
-    def _pct(d, key):
-        v = d.get(key)
-        return f"{v:.1f}%" if isinstance(v, (int, float)) else "—"
-
-    def _num(d, key):
-        v = d.get(key)
-        return str(v) if v is not None else "—"
-
     def _fmt_value(key, v):
         if v is None:
             return "—"
@@ -398,8 +390,11 @@ def write_results_markdown(
     for s in sorted(seq_stats, key=lambda x: x["seq_name"]):
         lines.append(
             f"| {s['seq_name']} | {s['n_frames']} | "
-            f"{_pct(s, 'MOTA')} | {_pct(s, 'MOTP')} | "
-            f"{_num(s, 'FP')} | {_num(s, 'FN')} | {_num(s, 'IDSW')} | "
+            f"{_fmt_value('MOTA', s.get('MOTA'))} | "
+            f"{_fmt_value('MOTP', s.get('MOTP'))} | "
+            f"{_fmt_value('FP',   s.get('FP'))} | "
+            f"{_fmt_value('FN',   s.get('FN'))} | "
+            f"{_fmt_value('IDSW', s.get('IDSW'))} | "
             f"{s['hz']} |"
         )
 

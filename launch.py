@@ -34,16 +34,14 @@ from perception.detector import YOLOv8Detector
 from tracking.tracker import ByteTracker
 from visualization.debug_vis import DebugVisualizer
 from world_model.scene_graph import SceneGraph
-from perception.depth_estimator import (
-    DepthEstimator, DepthAnythingEstimator, NullDepthEstimator,
-    StereoSGBMDepthEstimator, RAFTStereoDepthEstimator,
-)
+from perception.depth_estimator import DepthEstimator
 from perception.appearance_extractor import (
     AppearanceExtractor, NullAppearanceExtractor,
 )
 from perception.semantic_segmenter import (
-    SemanticSegmenter, NullSemanticSegmenter,
+    SemanticSegmenter, NullSemanticSegmenter, drivable_mask,
 )
+from perception.depth_estimator_factory import build_depth_estimator
 from world_model.occupancy_grid import (
     OccupancyGridBuilder, OccupancyGridParams,
 )
@@ -56,7 +54,7 @@ from world_model.occupancy_3d import (
 from world_model.room_layer import RoomLayer, RoomLayerConfig
 from perception.health_monitor import HealthMonitor, HealthStatus
 from world_model.world_map import WorldMap
-from perception.pose_estimator import NullPoseEstimator, CameraPose
+from perception.pose_estimator import CameraPose
 from perception.imu_interface import IMUInterface
 from perception.pose_estimator_factory import (
     build_imu, build_pose_estimator, build_visual_pose_estimator,
@@ -194,7 +192,6 @@ class Pipeline:
 
     def _build_depth_estimator(self) -> DepthEstimator:
         """Delegates to perception.depth_estimator_factory."""
-        from perception.depth_estimator_factory import build_depth_estimator
         return build_depth_estimator(self._cfg)
 
     def _build_occupancy_grid_builder(self) -> Optional[OccupancyGridBuilder]:
@@ -572,8 +569,7 @@ class Pipeline:
             if (self._drivable_projector_params is not None
                     and semantic_mask is not None
                     and camera_pose is not None):
-                from perception.semantic_segmenter import drivable_mask as _drv
-                d_mask = _drv(semantic_mask)
+                d_mask = drivable_mask(semantic_mask)
                 if d_mask.any():
                     use_depth = self._cfg.drivable_costmap.use_depth
                     depth_arr = next(

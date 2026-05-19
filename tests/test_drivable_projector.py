@@ -248,7 +248,7 @@ class TestDepthAwareProjection:
         fx=fy=200, camera at (0, 0, 1) looking down. Pixel at
         (cx + fx, cy) with depth 1.0 m:
 
-            p_cam   = (1*1/1, 0, 1) = (1, 0, 1)         (no, fx cancels: (1, 0, 1))
+            p_cam   = (1, 0, 1)   (fx cancels: (u-cx)*d/fx = fx*1/fx)
             p_world = R @ (1,0,1) + (0,0,1)
                     = (1, 0, -1) + (0, 0, 1) = (1, 0, 0)
 
