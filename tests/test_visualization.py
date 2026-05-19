@@ -895,6 +895,68 @@ class TestRerunTrackHistory:
 
 
 # ---------------------------------------------------------------------------
+# TestRerunHealthScalars — per-stage HealthMonitor latency/budget scalars
+# ---------------------------------------------------------------------------
+
+class TestRerunHealthScalars:
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _monitor(self, stages):
+        """Build a HealthMonitor + observe one latency per stage."""
+        from perception.health_monitor import HealthMonitor
+        m = HealthMonitor()
+        for name, budget, observed in stages:
+            t = m.register(name, budget_ms=budget)
+            if observed is not None:
+                t.observe(observed)
+        return m
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def test_emits_last_ms_and_budget_per_stage(self, cfg):
+        logger = self._ready_logger(cfg)
+        monitor = self._monitor([
+            ("detector", 12.0, 8.5),
+            ("tracker",   3.0, 1.2),
+        ])
+        logger.log_metrics(0.0, 0.0, 0.0, 0, health_monitor=monitor)
+
+        det_last  = self._by_path(logger._rr, "metrics/health/detector/last_ms")
+        det_bud   = self._by_path(logger._rr, "metrics/health/detector/budget_ms")
+        trk_last  = self._by_path(logger._rr, "metrics/health/tracker/last_ms")
+        trk_bud   = self._by_path(logger._rr, "metrics/health/tracker/budget_ms")
+        assert det_last and det_bud and trk_last and trk_bud
+        assert all(c["primitive"]["type"] == "Scalars"
+                   for c in det_last + det_bud + trk_last + trk_bud)
+
+    def test_unobserved_stage_skipped(self, cfg):
+        # Registered but never observe()d → STALE w/ n_observations=0;
+        # would emit a misleading last_ms=0 line, so the logger drops it.
+        logger = self._ready_logger(cfg)
+        monitor = self._monitor([
+            ("detector", 12.0, 8.5),   # observed
+            ("appearance", 15.0, None),  # registered, not observed
+        ])
+        logger.log_metrics(0.0, 0.0, 0.0, 0, health_monitor=monitor)
+        assert     self._by_path(logger._rr, "metrics/health/detector/last_ms")
+        assert not self._by_path(logger._rr, "metrics/health/appearance/last_ms")
+        assert not self._by_path(logger._rr, "metrics/health/appearance/budget_ms")
+
+    def test_no_monitor_means_no_health_calls(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_metrics(1.0, 2.0, 30.0, 0)   # no health_monitor=
+        health_paths = [c for c in logger._rr.calls
+                        if c["path"].startswith("metrics/health/")]
+        assert not health_paths
+
+
+# ---------------------------------------------------------------------------
 # TestRerunDepthMap — dense depth map heatmap at world/camera/depth
 # ---------------------------------------------------------------------------
 

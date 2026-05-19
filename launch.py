@@ -657,6 +657,7 @@ class Pipeline:
                      if e.depth_map is not None),
                     None,
                 ),
+                health_monitor=self._health,
             )
 
             t_total = time.monotonic() - t_frame_start

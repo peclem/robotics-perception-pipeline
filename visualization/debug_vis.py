@@ -212,6 +212,7 @@ class DebugVisualizer:
         world_map=None,
         occupancy_grid_2d=None,
         depth_map=None,
+        health_monitor=None,
     ) -> None:
         self._rlog.log_frame(
             frame, detections, tracks,
@@ -221,7 +222,10 @@ class DebugVisualizer:
             occupancy_grid_2d=occupancy_grid_2d,
             depth_map=depth_map,
         )
-        self._rlog.log_metrics(detect_ms, track_ms, fps, n_lost)
+        self._rlog.log_metrics(
+            detect_ms, track_ms, fps, n_lost,
+            health_monitor=health_monitor,
+        )
 
     def close(self) -> None:
         self._rlog.close()

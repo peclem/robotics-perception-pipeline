@@ -25,6 +25,8 @@ metrics/detect_ms           — detector latency time series
 metrics/track_ms            — tracker latency time series
 metrics/fps                 — pipeline throughput time series
 metrics/n_lost              — lost track count time series
+metrics/health/{stage}/last_ms    — per-stage latency (HealthMonitor)
+metrics/health/{stage}/budget_ms  — per-stage budget (HealthMonitor)
 tracks/{id}/nis             — per-track NIS scalar (show_nis only)
 
 WSL2 → Windows connection
@@ -857,6 +859,7 @@ class RerunLogger:
         track_ms:  float,
         fps:       float,
         n_lost:    int,
+        health_monitor=None,
     ) -> None:
         """Log pipeline performance as Rerun scalar time series."""
         if not self._ready or self._rr is None:
@@ -875,6 +878,45 @@ class RerunLogger:
                 rr.log(path, rr.Scalars(float(value)))
             except Exception as e:
                 log.debug("Scalars log failed %s: %s", path, e)
+
+        if health_monitor is not None:
+            self._log_health(rr, health_monitor)
+
+    def _log_health(self, rr, health_monitor) -> None:
+        """
+        Per-stage HealthMonitor scalars under metrics/health/{stage}/:
+
+            last_ms    — latest observed latency for the stage
+            budget_ms  — configured per-stage budget (re-emitted each
+                         frame so it draws as a flat reference line
+                         in the same chart)
+
+        STALE stages (no observation yet, or no observation in the
+        stale window) are skipped — emitting their stale last_ms=0
+        would draw a misleading "fast" line.
+        """
+        try:
+            reports = list(health_monitor.reports())
+        except Exception as e:
+            log.debug("HealthMonitor reports() failed: %s", e)
+            return
+
+        for r in reports:
+            # Status==STALE on a never-observed tracker yields last_ms=0,
+            # which is meaningless. Skip until the stage actually fires.
+            if r.n_observations == 0:
+                continue
+            try:
+                rr.log(
+                    f"metrics/health/{r.name}/last_ms",
+                    rr.Scalars(float(r.last_ms)),
+                )
+                rr.log(
+                    f"metrics/health/{r.name}/budget_ms",
+                    rr.Scalars(float(r.budget_ms)),
+                )
+            except Exception as e:
+                log.debug("Health scalar log failed %s: %s", r.name, e)
 
     # ------------------------------------------------------------------
     # Lifecycle
