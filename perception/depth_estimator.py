@@ -110,6 +110,19 @@ class DepthEstimator(ABC):
         """Mean inference latency in milliseconds."""
         ...
 
+    def dense_depth_map(self, frame: CameraFrame) -> Optional[np.ndarray]:
+        """
+        Optional: return a dense (H, W) float32 depth map in metres for
+        the whole frame, independent of detections. Default returns None
+        (backend doesn't expose a frame-level dense map). Override in
+        backends that produce one — DepthAnythingEstimator,
+        StereoSGBMDepthEstimator, RAFTStereoDepthEstimator.
+
+        Consumers should treat None as "this backend has no dense map
+        available" rather than as an error.
+        """
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Pixel -> 3D projection
@@ -323,6 +336,16 @@ class DepthAnythingEstimator(DepthEstimator):
     def is_ready(self) -> bool:
         return self._ready
 
+    def dense_depth_map(self, frame: CameraFrame) -> Optional[np.ndarray]:
+        """Run the frame-level dense forward and return the depth map."""
+        if not self._ready:
+            return None
+        try:
+            return self._run_inference(frame)
+        except Exception as exc:
+            log.debug("DepthAnythingEstimator dense forward failed: %s", exc)
+            return None
+
 
 # ---------------------------------------------------------------------------
 # Null estimator — fallback
@@ -479,6 +502,26 @@ class StereoSGBMDepthEstimator(DepthEstimator):
     def mean_inference_ms(self) -> float:
         return float(np.mean(self._inference_times_ms[-30:]))  if \
             self._inference_times_ms else 0.0
+
+    def dense_depth_map(self, frame: CameraFrame) -> Optional[np.ndarray]:
+        """Compute disparity → metric depth across the whole frame."""
+        if frame.right_image is None or frame.intrinsics.baseline_m <= 0:
+            return None
+        try:
+            gl = cv2.cvtColor(frame.image,       cv2.COLOR_BGR2GRAY)
+            gr = cv2.cvtColor(frame.right_image, cv2.COLOR_BGR2GRAY)
+            disparity = self._sgbm.compute(gl, gr).astype(np.float32) / 16.0
+            fx = frame.intrinsics.fx
+            baseline = frame.intrinsics.baseline_m
+            # Convert disparity → depth. Invalid pixels (disparity ≤ 0.5)
+            # become 0, matching the per-detection convention.
+            depth = np.zeros_like(disparity, dtype=np.float32)
+            valid = disparity > 0.5
+            depth[valid] = (fx * baseline) / disparity[valid]
+            return depth
+        except Exception as exc:
+            log.debug("StereoSGBMDepthEstimator dense forward failed: %s", exc)
+            return None
 
     def __repr__(self) -> str:
         return (
@@ -737,6 +780,24 @@ class RAFTStereoDepthEstimator(DepthEstimator):
     @property
     def is_ready(self) -> bool:
         return self._ready
+
+    def dense_depth_map(self, frame: CameraFrame) -> Optional[np.ndarray]:
+        """Run RAFT-Stereo full-frame and convert disparity → metric depth."""
+        if not self._ready:
+            return None
+        if frame.right_image is None or frame.intrinsics.baseline_m <= 0:
+            return None
+        try:
+            disparity = self._infer_disparity(frame.image, frame.right_image)
+            fx = frame.intrinsics.fx
+            baseline = frame.intrinsics.baseline_m
+            depth = np.zeros_like(disparity, dtype=np.float32)
+            valid = disparity > 0.5
+            depth[valid] = (fx * baseline) / disparity[valid]
+            return depth
+        except Exception as exc:
+            log.debug("RAFTStereoDepthEstimator dense forward failed: %s", exc)
+            return None
 
     def __repr__(self) -> str:
         return (

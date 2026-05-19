@@ -189,43 +189,9 @@ class Pipeline:
         self._writer     = None
 
     def _build_depth_estimator(self) -> DepthEstimator:
-        """Factory for DepthEstimator keyed on depth.type."""
-        cfg = self._cfg.depth
-        if not cfg.enabled or cfg.type == "null":
-            return NullDepthEstimator()
-        if cfg.type == "depth_anything":
-            log.info("Loading Depth Anything V2: %s ...", cfg.model)
-            est = DepthAnythingEstimator(device=cfg.device, model_name=cfg.model)
-            est.warmup()
-            log.info("Depth Anything V2 ready. Latency: %.1f ms",
-                     est.mean_inference_ms)
-            return est
-        if cfg.type == "stereo_sgbm":
-            log.info(
-                "Building StereoSGBMDepthEstimator (CPU; num_disp=%d, block=%d)",
-                cfg.sgbm_num_disparities, cfg.sgbm_block_size,
-            )
-            est = StereoSGBMDepthEstimator(
-                min_disparity=cfg.sgbm_min_disparity,
-                num_disparities=cfg.sgbm_num_disparities,
-                block_size=cfg.sgbm_block_size,
-            )
-            est.warmup()
-            return est
-        if cfg.type == "raft_stereo":
-            log.info(
-                "Building RAFTStereoDepthEstimator (GPU; iters=%d, repo=%s)",
-                cfg.raft_iters, cfg.raft_repo_dir,
-            )
-            est = RAFTStereoDepthEstimator(
-                repo_dir=cfg.raft_repo_dir,
-                checkpoint=cfg.raft_checkpoint,
-                device=cfg.device,
-                iters=cfg.raft_iters,
-            )
-            est.warmup()
-            return est
-        raise ValueError(f"Unknown depth.type={cfg.type!r}")
+        """Delegates to perception.depth_estimator_factory."""
+        from perception.depth_estimator_factory import build_depth_estimator
+        return build_depth_estimator(self._cfg)
 
     def _build_occupancy_grid_builder(self) -> Optional[OccupancyGridBuilder]:
         """

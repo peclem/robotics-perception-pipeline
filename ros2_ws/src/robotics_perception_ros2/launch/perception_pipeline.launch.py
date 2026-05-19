@@ -88,6 +88,13 @@ def generate_launch_description():
         ),
         Node(
             package="robotics_perception_ros2",
+            executable="depth_node",
+            name="depth",
+            output="screen",
+            parameters=common_params,
+        ),
+        Node(
+            package="robotics_perception_ros2",
             executable="scene_graph_node",
             name="scene_graph",
             output="screen",

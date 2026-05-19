@@ -38,6 +38,8 @@ setup(
             f"{package_name}.tracking_node:main",
             "pose_node = "
             f"{package_name}.pose_node:main",
+            "depth_node = "
+            f"{package_name}.depth_node:main",
             "scene_graph_node = "
             f"{package_name}.scene_graph_node:main",
             "occupancy_grid_node = "

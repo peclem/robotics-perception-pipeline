@@ -43,6 +43,7 @@ from robotics_perception_ros2.camera_publisher_node import CameraPublisherNode
 from robotics_perception_ros2.detection_node       import DetectionNode
 from robotics_perception_ros2.tracking_node        import TrackingNode
 from robotics_perception_ros2.pose_node            import PoseNode
+from robotics_perception_ros2.depth_node           import DepthNode
 from robotics_perception_ros2.scene_graph_node     import SceneGraphNode
 from robotics_perception_ros2.occupancy_grid_node  import OccupancyGridNode
 from robotics_perception_ros2.occupancy_3d_node    import Occupancy3DNode
@@ -63,6 +64,7 @@ def main() -> None:
         DetectionNode(enable_intra_process=True),
         TrackingNode(enable_intra_process=True),
         PoseNode(enable_intra_process=True),
+        DepthNode(enable_intra_process=True),
         SceneGraphNode(enable_intra_process=True),
         OccupancyGridNode(enable_intra_process=True),
         Occupancy3DNode(enable_intra_process=True),
