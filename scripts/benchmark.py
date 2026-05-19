@@ -345,19 +345,49 @@ def write_results_markdown(
         "",
     ]
 
+    # "—" is the en-dash marker for missing data — used wherever the
+    # caller supplied a partial metrics dict (a non-MOT17 benchmark,
+    # an ablation script that doesn't compute IDSW, a test fixture).
+    # Canonical MOT metrics are rendered as percentages; raw counts as
+    # integers; everything else as a two-decimal float.
+    _PCT_KEYS = {"MOTA", "MOTP", "IDF1", "HOTA", "DetA", "AssA", "LocA"}
+    _INT_KEYS = {"FP", "FN", "IDSW"}
+
+    def _pct(d, key):
+        v = d.get(key)
+        return f"{v:.1f}%" if isinstance(v, (int, float)) else "—"
+
+    def _num(d, key):
+        v = d.get(key)
+        return str(v) if v is not None else "—"
+
+    def _fmt_value(key, v):
+        if v is None:
+            return "—"
+        if key in _PCT_KEYS and isinstance(v, (int, float)):
+            return f"{v:.1f}%"
+        if key in _INT_KEYS:
+            return str(v)
+        if isinstance(v, float):
+            return f"{v:.2f}"
+        return str(v)
+
     if metrics:
         lines += [
             "## Overall Metrics",
             "",
             "| Metric | Value |",
             "|--------|-------|",
-            f"| MOTA   | {metrics['MOTA']:.1f}% |",
-            f"| MOTP   | {metrics['MOTP']:.1f}% |",
-            f"| FP     | {metrics['FP']} |",
-            f"| FN     | {metrics['FN']} |",
-            f"| IDSW   | {metrics['IDSW']} |",
-            "",
         ]
+        # Preferred ordering for the standard MOT metrics; everything
+        # else preserves insertion order (Python 3.7+ dict).
+        preferred = ["MOTA", "MOTP", "IDF1", "HOTA",
+                     "FP", "FN", "IDSW"]
+        keys = [k for k in preferred if k in metrics] + \
+               [k for k in metrics if k not in preferred]
+        for key in keys:
+            lines.append(f"| {key:<6} | {_fmt_value(key, metrics[key])} |")
+        lines.append("")
 
     lines += [
         "## Per-Sequence Results",
@@ -368,8 +398,9 @@ def write_results_markdown(
     for s in sorted(seq_stats, key=lambda x: x["seq_name"]):
         lines.append(
             f"| {s['seq_name']} | {s['n_frames']} | "
-            f"{s['MOTA']:.1f}% | {s['MOTP']:.1f}% | "
-            f"{s['FP']} | {s['FN']} | {s['IDSW']} | {s['hz']} |"
+            f"{_pct(s, 'MOTA')} | {_pct(s, 'MOTP')} | "
+            f"{_num(s, 'FP')} | {_num(s, 'FN')} | {_num(s, 'IDSW')} | "
+            f"{s['hz']} |"
         )
 
     lines += [
