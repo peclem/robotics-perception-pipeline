@@ -16,6 +16,8 @@ world/detections/boxes      — raw YOLOv8 output (grey)
 world/tracks/boxes          — confirmed KF-filtered tracks (colour-coded)
 world/tracks/velocity       — KF velocity vectors (Arrows2D)
 world/tracks/covariance     — 2σ position ellipses (LineStrips2D)
+world/world_map/visible     — WorldMap entries seen this frame (bright)
+world/world_map/remembered  — WorldMap entries not currently visible (faded)
 metrics/detect_ms           — detector latency time series
 metrics/track_ms            — tracker latency time series
 metrics/fps                 — pipeline throughput time series
@@ -231,6 +233,7 @@ class RerunLogger:
         semantic_mask=None,
         camera_pose=None,
         scene_objects=None,
+        world_map=None,
     ) -> None:
         """
         Log all visual data for one frame.
@@ -270,6 +273,8 @@ class RerunLogger:
                 self._log_semantic(rr, semantic_mask)
             if scene_objects is not None:
                 self._log_world_tracks(rr, scene_objects)
+            if world_map is not None:
+                self._log_world_map(rr, world_map, scene_objects)
 
         except Exception as exc:
             log.debug("Rerun log_frame error (suppressed): %s", exc)
@@ -632,6 +637,77 @@ class RerunLogger:
             )
         except Exception as e:
             log.debug("World tracks log failed: %s", e)
+
+    def _log_world_map(self, rr, world_map, scene_objects) -> None:
+        """
+        Render the long-term spatial memory (WorldMap) as two layers:
+
+            world/world_map/visible    — entries whose persistent_id is
+                                         also in `scene_objects` this
+                                         frame. Bright, larger markers.
+            world/world_map/remembered — entries NOT currently visible.
+                                         Faded grey markers, smaller.
+
+        Labels carry "p:{persistent_id} {class}  n=k" so the showcase
+        viewer can read off how many times each entry has been
+        re-associated. Empty layers emit Clear, matching the rest of
+        the logger.
+        """
+        try:
+            entries = world_map.all_entries()
+        except Exception:
+            entries = []
+
+        visible_ids: set = set()
+        if scene_objects:
+            for obj in scene_objects:
+                pid = getattr(obj, "persistent_id", None)
+                if pid is not None:
+                    visible_ids.add(int(pid))
+
+        vis_pos:   list = []
+        vis_lab:   list = []
+        vis_col:   list = []
+        rem_pos:   list = []
+        rem_lab:   list = []
+        rem_col:   list = []
+        for e in entries:
+            pos = np.asarray(e.position_world, dtype=np.float32)
+            if pos.shape[0] < 3:
+                continue
+            pid = int(e.persistent_id)
+            label = f"p:{pid} {e.class_name} n={e.n_observations}"
+            if pid in visible_ids:
+                vis_pos.append(pos[:3])
+                vis_lab.append(label)
+                vis_col.append(_track_colour_rgba(pid))
+            else:
+                rem_pos.append(pos[:3])
+                rem_lab.append(label)
+                # Faded grey — same hue family for all "remembered"
+                # entries so the eye reads them as one class.
+                rem_col.append((160, 160, 200, 110))
+
+        def _emit(path: str, pos, lab, col, radii: float) -> None:
+            if not pos:
+                try:
+                    rr.log(path, rr.Clear(recursive=False))
+                except Exception:
+                    pass
+                return
+            try:
+                rr.log(
+                    path,
+                    rr.Points3D(
+                        positions=np.asarray(pos, dtype=np.float32),
+                        labels=lab, colors=col, radii=radii,
+                    ),
+                )
+            except Exception as e:
+                log.debug("WorldMap %s log failed: %s", path, e)
+
+        _emit("world/world_map/visible",    vis_pos, vis_lab, vis_col, 0.11)
+        _emit("world/world_map/remembered", rem_pos, rem_lab, rem_col, 0.06)
 
     # ------------------------------------------------------------------
     # Metrics

@@ -683,6 +683,127 @@ class TestRerunWorldTracks:
         assert not self._by_path(logger._rr, "world/scene/objects")
 
 
+# ---------------------------------------------------------------------------
+# TestRerunWorldMap — "remembered vs visible" long-term spatial memory layer
+# ---------------------------------------------------------------------------
+
+class TestRerunWorldMap:
+
+    def _world_map(self, entries):
+        """Build a WorldMap pre-populated with the given entries."""
+        from world_model.world_map import WorldMap
+        from world_model.stability import StabilityClass
+        wm = WorldMap()
+        for class_name, pos, emb in entries:
+            wm.insert(
+                class_name=class_name, class_id=0,
+                position_world=np.asarray(pos, dtype=np.float64),
+                embedding=emb, stability=StabilityClass.STATIC,
+                timestamp=0.0,
+            )
+        return wm
+
+    def _obj(self, track_id=1, position_world=None, persistent_id=None,
+             class_name="chair"):
+        from world_model.object_state import ObjectState
+        return ObjectState(
+            track_id=track_id, class_id=0, class_name=class_name,
+            position=np.array([0.0, 0.0]),
+            covariance=np.eye(8),
+            velocity=np.zeros(4),
+            score=0.9, last_seen=0.0, n_updates=1,
+            position_world=(
+                np.asarray(position_world, dtype=np.float64)
+                if position_world is not None else None
+            ),
+            persistent_id=persistent_id,
+            max_history=1,
+        )
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def test_visible_and_remembered_split(self, cfg):
+        logger = self._ready_logger(cfg)
+        wm = self._world_map([
+            ("chair", [1.0, 0.0, 0.5], None),   # persistent_id=1
+            ("chair", [3.0, 0.0, 0.5], None),   # persistent_id=2
+            ("chair", [5.0, 0.0, 0.5], None),   # persistent_id=3
+        ])
+        # Only persistent_id=2 is "visible" this frame.
+        objs = [self._obj(track_id=10, position_world=[3.0, 0.0, 0.5],
+                          persistent_id=2)]
+        logger.log_frame(make_frame(), [], [],
+                         scene_objects=objs, world_map=wm)
+
+        vis = self._by_path(logger._rr, "world/world_map/visible")[-1]
+        rem = self._by_path(logger._rr, "world/world_map/remembered")[-1]
+        assert vis["primitive"]["type"] == "Points3D"
+        assert rem["primitive"]["type"] == "Points3D"
+        # 1 visible, 2 remembered.
+        assert vis["primitive"]["positions"].shape == (1, 3)
+        assert rem["primitive"]["positions"].shape == (2, 3)
+        np.testing.assert_allclose(
+            vis["primitive"]["positions"], [[3.0, 0.0, 0.5]], atol=1e-6,
+        )
+
+    def test_labels_carry_persistent_id_and_obs_count(self, cfg):
+        logger = self._ready_logger(cfg)
+        wm = self._world_map([("chair", [0.0, 0.0, 0.0], None)])
+        logger.log_frame(make_frame(), [], [], world_map=wm)
+        # No scene_objects → everything is "remembered".
+        rem = self._by_path(logger._rr, "world/world_map/remembered")[-1]
+        labels = rem["primitive"]["labels"]
+        assert labels == ["p:1 chair n=1"]
+
+    def test_empty_world_map_emits_clears(self, cfg):
+        logger = self._ready_logger(cfg)
+        wm = self._world_map([])
+        logger.log_frame(make_frame(), [], [], world_map=wm)
+        for path in ("world/world_map/visible", "world/world_map/remembered"):
+            clears = [c for c in self._by_path(logger._rr, path)
+                      if c["primitive"]["type"] == "Clear"]
+            assert clears, f"expected Clear on {path}"
+
+    def test_all_visible_clears_remembered_layer(self, cfg):
+        logger = self._ready_logger(cfg)
+        wm = self._world_map([("chair", [0.0, 0.0, 0.0], None)])
+        objs = [self._obj(track_id=10, position_world=[0.0, 0.0, 0.0],
+                          persistent_id=1)]
+        logger.log_frame(make_frame(), [], [],
+                         scene_objects=objs, world_map=wm)
+        rem = self._by_path(logger._rr, "world/world_map/remembered")[-1]
+        # Nothing remembered → Clear.
+        assert rem["primitive"]["type"] == "Clear"
+        vis = self._by_path(logger._rr, "world/world_map/visible")[-1]
+        assert vis["primitive"]["type"] == "Points3D"
+
+    def test_objects_without_persistent_id_count_as_not_visible(self, cfg):
+        logger = self._ready_logger(cfg)
+        wm = self._world_map([("chair", [0.0, 0.0, 0.0], None)])
+        # Scene has an object but with no persistent_id — can't match.
+        objs = [self._obj(track_id=10, position_world=[0.0, 0.0, 0.0],
+                          persistent_id=None)]
+        logger.log_frame(make_frame(), [], [],
+                         scene_objects=objs, world_map=wm)
+        rem = self._by_path(logger._rr, "world/world_map/remembered")[-1]
+        assert rem["primitive"]["type"] == "Points3D"
+        assert rem["primitive"]["positions"].shape == (1, 3)
+
+    def test_no_world_map_arg_means_no_call(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [])
+        paths = {c["path"] for c in logger._rr.calls}
+        assert "world/world_map/visible"    not in paths
+        assert "world/world_map/remembered" not in paths
+
+
 class TestWSLHostDetect:
 
     def test_explicit_host_unchanged(self):
