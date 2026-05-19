@@ -200,31 +200,48 @@ marked. Unimplemented components and their integration points are identified.
 
 ## Data flow
 
-    CameraFrame (image, timestamp, intrinsics)
+    CameraFrame (image, timestamp, intrinsics, optional right_image)
         │
-        ├──▶ YOLOv8n ──▶ Detection[] (bbox, confidence, class)
-        │         │
-        │         └──▶ Depth Anything V2 ──▶ depth_m, position_3d
+        ├──▶ YOLOv8n ──────────────▶ Detection[]
+        │                              (bbox, confidence, class)
+        │
+        ├──▶ Depth Anything V2 / ─▶ DepthEstimate[] + dense depth_map
+        │    SGBM / RAFT-Stereo
+        │
+        ├──▶ Mask2Former (Swin-T) ─▶ SemanticMask
+        │                              (drivable_mask, surface-class
+        │                               stability prior)
+        │
+        ├──▶ DINOv2 ──────────────▶ per-detection embeddings (L2-norm)
+        │    (gated on use_appearance OR world_map.enabled)
         │
         ├──▶ CameraMotionCompensator
-        │         LK optical flow on background keypoints
-        │         Affine RANSAC → homography H
-        │         H⁻¹ applied to track states before association
+        │      LK optical flow on background keypoints (object-bbox
+        │      masked) + affine RANSAC → homography H⁻¹ applied to
+        │      track states before association
         │
         ▼
     ByteTracker
-        Stage 1: D_high ↔ all tracks    (Hungarian, 1-IoU cost)
+        Stage 1: D_high ↔ all tracks    (Hungarian, IoU + α·cosine)
         Stage 2: D_low  ↔ lost tracks   (occlusion rescue)
         Per track:
             KF.predict(dt)   →  x̂ = F x,  P = F P Fᵀ + Q
             KF.update(z)     →  x = x̂ + K(z − Hx̂),  Joseph form
             NIS = yᵀ S⁻¹ y  ~  χ²(4),  bounds [0.711, 9.488]
+            embedding ← EMA(0.9 * old, 0.1 * new)
         │
         ▼
-    DPVOPoseEstimator (when pose_estimator.type == 'dpvo')
+    Visual ego-pose: DPVOPoseEstimator (pose_estimator.type='dpvo')
         Lazy DPVO init on first frame; stride-based rate decoupling
         (default stride=2 → 15 Hz pose at 30 Hz camera). Returns
         CameraPose(R, t) in world ← camera convention.
+        │
+        ▼ (when vio.enabled)
+    VIOPoseEstimator (wraps visual + IMU)
+        Pulls IMU samples since last visual frame → Forster
+        pre-integration → 15-D error-state EKF predict; visual pose
+        as 6-DOF measurement → EKF update (Joseph form). Output is
+        the fused CameraPose with the same world ← camera signature.
         │
         ▼
     TransformTree
@@ -235,20 +252,45 @@ marked. Unimplemented components and their integration points are identified.
         ▼
     SceneGraph
         ObjectState per confirmed track:
+            track_id       session-local — ByteTracker assignment
+            persistent_id  stable across re-associations (WorldMap)
             position       (cx, cy)  pixels — camera frame
             position_3d    (X, Y, Z) metres — camera frame
             position_world (X, Y, Z) metres — world (map) frame [¹]
             covariance     8×8 full matrix
             velocity       (vx, vy, vw, vh) pixels/s
-            trajectory     bounded KFSnapshot history
+            stability      STATIC / SEMI_STATIC / DYNAMIC
+                           (class prior + motion override +
+                            optional semantic surface refinement)
+            history        bounded KFSnapshot deque
+        │
+        ├──▶ WorldMap re-association
+        │      Spatial gate (≤spatial_gate_m) + cosine appearance
+        │      gate (≥similarity_threshold) → adopts persistent_id
+        │      on revisit. Opt-in eviction: max_age_s + max_entries.
+        │
+        ├──▶ OccupancyGridBuilder ─▶ nav_msgs/OccupancyGrid
+        │      2σ position covariance → metric inflation per object.
+        │
+        ├──▶ Occupancy3DBuilder ──▶ sparse {(i,j,k): occ} →
+        │                            PointCloud2 + optional Octomap.
+        │
+        ├──▶ RoomLayer (when room_layer.enabled)
+        │      Morphological erode → CC → contour on 2D grid →
+        │      Room polygons with object membership.
+        │
+        ├──▶ project_drivable_to_grid (when drivable_costmap.enabled)
+        │      IPM (flat-ground or depth-aware) from SemanticMask's
+        │      drivable_mask + CameraPose → nav_msgs/OccupancyGrid
+        │      with 0=drivable, -1=unknown.
         │
         └──▶ query_nearby(pos, radius, frame='camera' | 'world')
-             → planner interface (pixel or metric)
+              → planner interface (pixel or metric)
 
     [¹] position_world is None when no ego-pose is available
         (NullPoseEstimator, or during DPVO's bootstrap window). The
         scale is up to a monocular ambiguity until anchored against
-        Depth Anything V2 (deferred).
+        Depth Anything V2 (deferred to Phase 1 validation).
 
 ---
 
@@ -339,25 +381,37 @@ the model path in config/default.yaml.
 
 ## Technical stack
 
-    Component                Library / method           Latency (4070Ti)
-    ───────────────────────────────────────────────────────────────────
-    Object detection         YOLOv8n (Ultralytics)      ~5 ms
-    Multi-object tracking    ByteTrack                  ~0.5 ms
-    State estimation         KF / EKF (NumPy)           ~0.1 ms
-    Depth estimation         Depth Anything V2          ~10 ms
-    Camera motion comp.      OpenCV LK + RANSAC         ~1 ms
-    Monocular ego-pose       DPVO @ stride 2            ~17 ms / call
-                                                         (every 2nd frame
-                                                          → ~8 ms amortised
-                                                          at 640×480)
-    World model              Custom scene graph         ~0.2 ms
-    Total (depth disabled, pose disabled)              ~7 ms  (143 Hz)
-    Total (depth enabled,  pose disabled)              ~17 ms  (58 Hz)
-    Total (depth + DPVO at stride 2)                   ~25 ms  (40 Hz)
+    Component                  Library / method            Latency (4070Ti)
+    ────────────────────────────────────────────────────────────────────────
+    Object detection           YOLOv8n (Ultralytics)       ~5 ms
+    Multi-object tracking      ByteTrack                   ~0.5 ms
+    State estimation           KF / EKF (NumPy)            ~0.1 ms
+    Camera motion comp.        OpenCV LK + RANSAC          ~1 ms
+    Depth (monocular)          Depth Anything V2           ~10 ms
+    Depth (stereo, classical)  cv2.StereoSGBM (CPU)        ~30 ms @ 640×480
+    Depth (stereo, neural)     RAFT-Stereo (Princeton-VL)  ~25 ms / 7 iters
+    Appearance / ReID          DINOv2-small (HF)           ~6 ms (batched)
+    Semantic segmentation      Mask2Former-Swin-T (HF)     ~25 ms
+    Monocular ego-pose         DPVO @ stride 2             ~17 ms / call
+                                                            (every 2nd frame
+                                                             → ~8 ms amortised
+                                                             at 640×480)
+    Visual-inertial fusion     Error-state EKF (15-D)      ~0.3 ms / step
+    World model                SceneGraph + KFSnapshot     ~0.2 ms
+    Occupancy 2D / 3D          Numpy sphere stamping       ~0.5 ms / 1.0 ms
+    Drivable costmap (IPM)     Vectorised projector        ~0.8 ms
+    Room layer                 cv2 erode + CC + contour    ~1 ms (100×100 grid)
+
+    Total (detection + tracking only — minimal)            ~6 ms  (165 Hz)
+    Total (with depth, appearance off, pose off)           ~17 ms (58 Hz)
+    Total (with depth + DPVO @ stride 2)                   ~25 ms (40 Hz)
+    Total (with depth + DPVO + semantic, no appearance)    ~50 ms (20 Hz)
+    Total (everything on — heavy showcase)                 ~60 ms (16 Hz)
 
     Measured on real video (data/sample.mp4). Synthetic random-noise
     frames overstate DPVO latency 2× — DPVO inserts keyframes constantly
-    without temporal coherence.
+    without temporal coherence. Semantic latency dominates the "everything
+    on" budget; disable it for higher Hz when you only need geometry.
 
 ---
 
@@ -368,11 +422,20 @@ the model path in config/default.yaml.
 
     python3.10 -m venv .venv && source .venv/bin/activate
 
+    # Install CUDA-matching torch FIRST (skipped if you have CPU-only torch
+    # already installed). Adjust the index URL to match your CUDA — this
+    # repo's reference stack runs cu130; the public PyPI default works
+    # on CPU.
     pip install torch torchvision torchaudio \
-        --index-url https://download.pytorch.org/whl/cu121
-    pip install ultralytics opencv-python-headless filterpy \
-        scipy numpy pyyaml pytest rerun-sdk transformers accelerate
-    pip install -e .
+        --index-url https://download.pytorch.org/whl/cu130
+
+    # Editable install pulls the core runtime (numpy, scipy, opencv,
+    # pyyaml) and lets you pick optional backends via extras. `[all]`
+    # is the convenience target — ultralytics + transformers +
+    # accelerate + rerun-sdk for the full pipeline. Pick narrower
+    # extras (`detect`, `depth`, `semantic`, `appearance`, `viz`,
+    # `dev`) if you only want a subset.
+    pip install -e ".[all,dev]"
 
     RERUN_ENABLED=false python3 launch.py --source synthetic
     RERUN_ENABLED=false python3 launch.py --source video --input data/clip.mp4
@@ -715,7 +778,8 @@ push and PR to main (see badge at the top).
 
 ## Configuration
 
-All parameters are externalised in config/default.yaml.
+All parameters are externalised in `config/default.yaml`. Highlights
+below — the YAML itself is the canonical reference.
 
     detector:
         model: "runs/detect/mot17_finetune/weights/best.pt"
@@ -730,67 +794,134 @@ All parameters are externalised in config/default.yaml.
 
     depth:
         enabled: false              # master switch (false → NullDepthEstimator)
-        type: depth_anything        # 'null' | 'depth_anything' | 'stereo_sgbm'
+        type: depth_anything        # 'null' | 'depth_anything'
+                                    #       | 'stereo_sgbm' | 'raft_stereo'
         model: "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
-        # stereo_sgbm-only tunables — needs frame.right_image + intrinsics.baseline_m
+        # stereo_sgbm-only — needs frame.right_image + intrinsics.baseline_m
         sgbm_num_disparities: 96    # must be divisible by 16
         sgbm_block_size: 7          # must be odd
+        # raft_stereo-only — pure-PyTorch neural stereo backend
+        raft_repo_dir: "third_party/RAFT-Stereo"
+        raft_checkpoint: "models/raftstereo-middlebury.pth"
+        raft_iters: 12
 
     pose_estimator:
         type: "null"        # 'null' | 'dpvo'
         stride: 2           # DPVO every Nth frame → pose at 30/stride Hz
         patches_per_frame: 96
 
+    imu:
+        type: "null"        # 'null' | 'synthetic'  (HW backends slot in here)
+        rate_hz: 200.0      # typical MEMS rate
+        sigma_gyro_n:  1.7e-4   # rad/s/√Hz (BMI088 datasheet)
+        sigma_accel_n: 2.0e-3   # m/s²/√Hz
+        synthetic_motion: "stationary_with_gravity"
+        synthetic_noise_std_accel: 0.0
+        synthetic_noise_std_gyro:  0.0
+        synthetic_seed: 0
+
+    vio:
+        # 15-D error-state EKF (state_estimation/visual_inertial_ekf.py).
+        # Predicts with pre-integrated IMU, updates with the visual pose.
+        # When enabled, wraps the visual estimator in VIOPoseEstimator;
+        # downstream consumers see the fused pose unchanged.
+        enabled: false
+        init_position_std_m:        0.10
+        init_velocity_std_mps:      0.10
+        init_orientation_std_rad:   0.05
+        init_bias_gyro_std:         1.0e-3
+        init_bias_accel_std:        1.0e-2
+        bias_gyro_random_walk:      1.0e-5
+        bias_accel_random_walk:     1.0e-4
+        visual_position_std_m:      0.05
+        visual_orientation_std_rad: 0.02
+        gravity_w: [0.0, 0.0, -9.81]
+
+    semantic:
+        enabled: false
+        type: "null"        # 'null' | 'mask2former'
+        model: "facebook/mask2former-swin-tiny-cityscapes-semantic"
+        device: "cuda"
+        dataset: "cityscapes"   # 'cityscapes' | 'ade20k'
+
     coordinate_frames:
-        enabled: false      # set true to use TransformTree for position_world
+        enabled: false      # use TransformTree for position_world
         root_frame: map
         camera_frame: camera_frame
-        static_extrinsics: []   # parent→child SE(3) edges, e.g. base_link → camera_frame
+        static_extrinsics: []   # parent→child SE(3) edges
 
     occupancy_grid:
-        enabled: false      # publish nav_msgs/OccupancyGrid from the scene graph
+        enabled: false      # publish nav_msgs/OccupancyGrid (dynamic obstacles)
         resolution_m: 0.05  # 5 cm per cell (Nav2 default)
         size_x_m: 20.0
         size_y_m: 20.0
-        origin_x_m: -10.0   # grid centred at world origin
+        origin_x_m: -10.0
         origin_y_m: -10.0
         default_inflation_m: 0.5
+        min_inflation_m: 0.10
+        per_class_inflation_m:
+            person:     0.40
+            bicycle:    0.60
+            car:        2.00
+            motorcycle: 0.80
+            bus:        3.00
+            truck:      2.50
 
     occupancy_3d:
         enabled: false      # publish sparse 3D voxels (PointCloud2 + optional Octomap)
         resolution_m: 0.10  # 10 cm per voxel
-        size_z_m: 3.0       # vertical span (standing person / arm workspace)
-        origin_z_m: -0.5    # 0.5 m below ground → ceiling at +2.5 m
+        size_z_m: 3.0
+        origin_z_m: -0.5    # ceiling at +2.5 m
         per_class_inflation_m:
             person: 0.40
             car:    2.00
 
+    drivable_costmap:
+        # Top-down OccupancyGrid produced by IPM-projecting the semantic
+        # drivable mask. Reuses occupancy_grid's grid spec so the two
+        # layers fuse cleanly in Nav2.
+        enabled: false
+        use_depth: true     # back-project via dense depth when available
+        z_ground_m: 0.0     # assumed ground plane z in world frame
+
+    room_layer:
+        # Top-of-graph room hierarchy (morphological-erosion clustering).
+        enabled: false
+        erosion_m: 0.45             # closes doorways up to 0.9 m wide
+        min_area_m2: 1.0
+        polygon_simplify_m: 0.05
+
     stability:
-        timeouts_s:         # per-class memory durations (seconds)
+        timeouts_s:                 # per-class memory durations
             DYNAMIC:     1.5
             SEMI_STATIC: 60.0
             # STATIC defaults to inf (never auto-pruned)
-        class_overrides: {}     # COCO class → STATIC/SEMI_STATIC/DYNAMIC
+        class_overrides: {}         # COCO class → STATIC/SEMI_STATIC/DYNAMIC
         demote_speed_px_s:  100.0   # observed motion → demote to DYNAMIC
         demote_frames:      90      # sustained for N frames
-        promote_speed_px_s: 10.0    # stationary → promote DYNAMIC objects
-        promote_frames:     900     # sustained for N frames
+        promote_speed_px_s: 10.0    # stationary → promote DYNAMIC
+        promote_frames:     900
 
-    appearance:                 # ReID embedding backend
-        type: "null"            # 'null' | 'dinov2'
+    appearance:                     # ReID embedding backend
+        type: "null"                # 'null' | 'dinov2'
         model: "facebook/dinov2-small"
         device: "cuda"
 
-    world_map:                  # long-term spatial memory
+    world_map:                      # long-term spatial memory
         enabled: false
-        spatial_gate_m: 1.5     # re-association candidates within this distance
-        similarity_threshold: 0.75   # cosine similarity threshold
-        allow_spatial_only: true     # fall back when embeddings missing
+        spatial_gate_m: 1.5
+        similarity_threshold: 0.75
+        allow_spatial_only: true
+        # Opt-in eviction (both default 0 = disabled → backwards-compat).
+        max_age_s: 0.0              # >0: drops entries unseen this long
+        max_entries: 0              # >0: LRU-evicts to keep len ≤ max_entries
 
-    health_monitor:             # per-stage latency budgets + diagnostics
+    health_monitor:                 # per-stage latency budgets + diagnostics
         enabled: true
-        warn_after:  3              # consecutive budget breaches → WARN
-        error_after: 30             # consecutive budget breaches → ERROR
+        warn_after:  3              # consecutive breaches → WARN
+        error_after: 30             # consecutive breaches → ERROR
+        stale_after_s: 5.0
+        window: 60                  # rolling sample retention
         log_period_s: 5.0
         stage_budgets_ms:
             detector:    12.0
@@ -799,9 +930,10 @@ All parameters are externalised in config/default.yaml.
             tracker:     3.0
             scene_graph: 5.0
             appearance:  15.0
+            semantic:    40.0
             frame_total: 40.0
 
-Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
+Environment variable overrides: `DEVICE=cpu`, `RERUN_ENABLED=false`.
 
 ---
 
@@ -870,6 +1002,51 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
 
 ## Extensions
 
+### Shipped (was deferred in earlier revisions)
+
+**WorldMap eviction.** Opt-in via `world_map.max_age_s` (drops entries
+whose `last_seen` is older than `now − max_age_s`) and
+`world_map.max_entries` (LRU cap on total entries; re-association
+refreshes `last_seen` so revisited entries survive). Both default to
+0 (disabled) → backwards-compatible monotonic-growth behaviour. The
+"revisited and not seen" eviction (robot returns to a region and
+doesn't observe a remembered entry) remains deferred — it needs
+sensor-FOV knowledge that belongs in the planner layer.
+
+**ReID appearance features.** DINOv2-small (`facebook/dinov2-small`)
+plugged in as a class-agnostic foundation embedding backend.
+Embeddings flow into both the per-frame ByteTracker matcher
+(StrongSORT-style 0.25 cosine blend) AND the WorldMap re-association
+gate. MOT17 ablation is in the README — small but honest positive on
+pedestrian-only data; bigger payoff expected on DanceTrack and on
+WorldMap revisit scenarios (not yet benchmarked).
+
+**Full IMU-VIO live orchestration.** The error-state EKF
+(`state_estimation/visual_inertial_ekf.py`) is wired through
+`VIOPoseEstimator` and selected via the shared
+`perception/pose_estimator_factory.py`. Both `launch.py` (standalone)
+and the ROS2 `pose_node` use the same factory — `/perception/odom`
+and `/tf` publish the fused pose when `vio.enabled=true`. Pre-
+integration + bias Jacobians + Joseph update all live; gravity-aligned
+initialiser and chi-square outlier rejection on the visual update
+are the remaining gaps before real-IMU deployment.
+
+**Neural stereo backend (RAFT-Stereo).** Pure-PyTorch backend slotted
+in alongside `StereoSGBMDepthEstimator` under the existing
+`DepthEstimator` ABC. `git clone` + `bash download_models.sh` is the
+entire setup — no custom CUDA build like DPVO. See "RAFT-Stereo setup"
+section above. IGEV-Stereo / FoundationStereo remain candidates if
+RAFT's accuracy turns out to be the bottleneck.
+
+**Drivable freespace + IPM projector.** Mask2Former drivable mask
+goes through `world_model.drivable_projector.project_drivable_to_grid`
+to produce a top-down `nav_msgs/OccupancyGrid`. Two backends behind
+the same contract: flat-ground IPM (no depth dep) and depth-aware
+back-projection (handles stairs / slopes). Both pipelines (standalone
+Rerun + ROS2 graph) emit the costmap.
+
+### Deferred
+
 **Metric scale anchoring for DPVO.** Monocular VO has unobservable
 absolute scale — DPVO's translations are in arbitrary units until
 anchored. Depth Anything V2 already provides metric depth, so the
@@ -882,49 +1059,29 @@ the median metric depth. Deferred until Phase 1 validation work
 DPV-SLAM extension adds long-term loop closure on top of DPVO with
 the same wrapper API. Drop-in upgrade when drift becomes a concern.
 
-**Eviction policy for WorldMap.** WorldMap currently grows
-monotonically — entries are never auto-evicted. A production
-deployment should add (a) a max-age cap, (b) a memory-size cap with
-LRU eviction, and (c) "revisited and not seen" eviction (robot
-returns to a region and doesn't observe a remembered entry → mark
-for verification, evict after K confirmations). Deferred because
-the right policy is deployment-specific.
+**Tightly-coupled VIO backbone.** The shipped fuser is loosely-coupled
+(consumes the visual estimator's 6-DOF pose as a measurement). The
+SOTA accuracy ceiling lives with tightly-coupled VIO — OpenVINS,
+VINS-Fusion, ORB-SLAM3+IMU. All slot into the same `PoseEstimator`
+ABC; pending a use case that exposes the loosely-coupled accuracy as
+the bottleneck.
 
-**ReID appearance features.** The association cost matrix in
-tracking/association.py accepts an additional cosine distance term.
-Adding an OSNet or FastReID backbone as an AppearanceExtractor module
-enables track re-identification after long occlusion without changes
-to the tracker or world model.
+**Full semantic SLAM.** Kimera-Semantics (Rosinol 2020) or open-
+vocabulary mapping (OpenScene, ConceptGraphs 2024). Investigate fit
+on 4070Ti carefully: Kimera needs IMU + is tight on VRAM; open-vocab
+is sub-real-time, batch-only. May end up as offline map-build +
+online query rather than fully online.
 
-**IMU-VIO fusion.** Full pipe: `IMUInterface` ABC + `SyntheticIMU`
-backend, Forster (2017) pre-integration with `PreintegratedMeasurement`
-(ΔR, Δv, Δp + 9×9 covariance + bias Jacobians for first-order
-correction), and now the *fuser* — a loosely-coupled error-state EKF
-(`state_estimation/visual_inertial_ekf.py`). 15-D error state
-[δp, δv, δθ, δb_g, δb_a]; predict consumes one `PreintegratedMeasurement`
-between visual frames; update consumes a 6-DOF `CameraPose` from any
-`PoseEstimator` (DPVO ships today; OpenVINS / VINS-Fusion / ORB-SLAM3
-slot into the same ABC). Joseph-form covariance update for PSD safety.
-Camera = IMU body in v1 (extrinsic foldable via TransformTree). What's
-NOT in this revision: live pipeline orchestration (IMU producer + visual
-loop sync + ROS2 fused-pose publisher), gravity-aligned initialiser,
-chi-square outlier rejection on the visual update.
+**C++ port of the ROS2 adapter nodes.** Multi-process Python rclpy
+caps at ~6 Hz on the reference stack (documented in "Honest performance
+notes" above). True zero-copy intra-process composition needs C++
+`ComposableNodeContainer`. Significant effort; only worth it for a
+real deployment, not for the demo / standalone pipeline.
 
-**Neural stereo backend.** `StereoSGBMDepthEstimator` (classical
-cv2.StereoSGBM) ships today and is genuinely the right pick for CPU-
-constrained or GPU-tight deployments. A neural stereo backend
-(IGEV-Stereo, FoundationStereo, CREStereo) slots into the same
-`DepthEstimator` ABC — better accuracy on textureless / low-feature
-scenes but adds a 1–3 GB GPU model and a CUDA build dependency.
-Deferred until a use case shows SGBM's accuracy is the bottleneck.
-
-**Bias-aware IMU pre-integration.** Already implemented — the
-PreintegratedMeasurement carries five 3×3 bias Jacobians and
-`correct_for_bias()` applies first-order corrections in O(1).
-What's still missing is the *fuser* that consumes these
-measurements: an error-state EKF or factor graph that estimates
-biases online and feeds the corrected pre-integration back into
-DPVO's pose updates.
+**Persistent room IDs across frames.** RoomLayer v1 rebuilds rooms
+each frame; IDs reshuffle when geometry changes. Persistent IDs need
+Hungarian assignment on Jaccard polygon overlap + a SLAM-grade global
+ego pose. Only useful once those land.
 
 ---
 
