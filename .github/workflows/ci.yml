@@ -3,10 +3,17 @@
 #
 # Runs on every push and pull request to main.
 # Uses CPU-only torch (no GPU available on GitHub runners).
-# Integration tests (real model, real GPU) are excluded via pytest marker.
+# Integration tests (@pytest.mark.integration) are excluded — they need
+# real GPU + downloaded model weights and run locally only.
+#
+# Optional deps (transformers / ultralytics / rerun-sdk / accelerate) come
+# from the package's [project.optional-dependencies] table — the source of
+# truth for which extras the project supports. Adding a new optional
+# backend just means adding it to pyproject.toml's `all` extra; this
+# workflow picks it up automatically.
 #
 # Environment overrides used:
-#   DEVICE=cpu          → detector.device
+#   DEVICE=cpu          → detector.device override
 #   RERUN_ENABLED=false → disables Rerun.io (no viewer in CI)
 # =============================================================================
 
@@ -28,61 +35,34 @@ jobs:
       RERUN_ENABLED: "false"
 
     steps:
-      # ---------------------------------------------------------------
-      # 1. Checkout
-      # ---------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------------
-      # 2. Set up Python 3.10
-      # ---------------------------------------------------------------
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: pip
 
-      # ---------------------------------------------------------------
-      # 3. Install CPU-only PyTorch first
-      #    Must be installed before ultralytics to avoid pulling in
-      #    the CUDA variant as a dependency.
-      # ---------------------------------------------------------------
+      # CPU-only torch must land BEFORE `pip install -e .[all]` — the
+      # project's [project.dependencies] declares plain `torch>=2.0`,
+      # which would otherwise resolve to the CUDA variant. Installing
+      # CPU torch first satisfies the version constraint with the
+      # variant we want; the editable install then skips re-installing
+      # torch.
       - name: Install CPU-only PyTorch
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install torch torchvision torchaudio \
             --index-url https://download.pytorch.org/whl/cpu
 
-      # ---------------------------------------------------------------
-      # 4. Install project dependencies
-      # ---------------------------------------------------------------
-      - name: Install dependencies
-        run: |
-          pip install \
-            ultralytics \
-            opencv-python-headless \
-            filterpy \
-            scipy \
-            numpy \
-            pyyaml \
-            pytest \
-            pytest-cov \
-            rerun-sdk
+      # Install package + all optional backends + dev extras (pytest).
+      # The `[all,dev]` extras pull ultralytics / transformers /
+      # accelerate / rerun-sdk / pytest. Single source of truth: the
+      # extras live in pyproject.toml, not duplicated here.
+      - name: Install package with all extras
+        run: pip install -e ".[all,dev]" pytest-cov
 
-      # ---------------------------------------------------------------
-      # 5. Install package in editable mode
-      #    Makes all submodules importable as perception.X, tracking.X etc.
-      # ---------------------------------------------------------------
-      - name: Install package
-        run: pip install -e .
-
-      # ---------------------------------------------------------------
-      # 6. Run unit tests
-      #    -m "not integration" excludes GPU tests.
-      #    --tb=short keeps failure output readable.
-      #    --cov generates a coverage report.
-      # ---------------------------------------------------------------
       - name: Run unit tests
         run: |
           python -m pytest tests/ \
@@ -93,13 +73,9 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml
 
-      # ---------------------------------------------------------------
-      # 7. Upload coverage report (optional — free on public repos)
-      # ---------------------------------------------------------------
       - name: Upload coverage report
         uses: codecov/codecov-action@v4
         if: always()
         with:
           files: coverage.xml
           fail_ci_if_error: false
-# cache bust Fri May 15 01:23:36 CEST 2026
