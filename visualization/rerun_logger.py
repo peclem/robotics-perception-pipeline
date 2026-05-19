@@ -22,6 +22,7 @@ world/tracks/history        — past centroid trail per track (LineStrips2D)
 world/world_map/visible     — WorldMap entries seen this frame (bright)
 world/world_map/remembered  — WorldMap entries not currently visible (faded)
 world/occupancy_grid        — top-down 2D occupancy grid (Points3D at z=0)
+world/drivable_costmap      — top-down drivable freespace (Points3D at z=0)
 metrics/detect_ms           — detector latency time series
 metrics/track_ms            — tracker latency time series
 metrics/fps                 — pipeline throughput time series
@@ -243,6 +244,7 @@ class RerunLogger:
         scene_objects=None,
         world_map=None,
         occupancy_grid_2d=None,
+        drivable_costmap=None,
         depth_map=None,
     ) -> None:
         """
@@ -291,6 +293,8 @@ class RerunLogger:
                 self._log_world_map(rr, world_map, scene_objects)
             if occupancy_grid_2d is not None:
                 self._log_occupancy_grid(rr, occupancy_grid_2d)
+            if drivable_costmap is not None:
+                self._log_drivable_costmap(rr, drivable_costmap)
 
         except Exception as exc:
             log.debug("Rerun log_frame error (suppressed): %s", exc)
@@ -798,6 +802,57 @@ class RerunLogger:
 
         _emit("world/world_map/visible",    vis_pos, vis_lab, vis_col, 0.11)
         _emit("world/world_map/remembered", rem_pos, rem_lab, rem_col, 0.06)
+
+    def _log_drivable_costmap(self, rr, drivable_costmap) -> None:
+        """
+        Top-down drivable-freespace costmap at z=0 in the world frame.
+        Mirror of _log_occupancy_grid but in green (the standard
+        "free / drivable" colour) instead of yellow→orange (obstacle
+        likelihood). `drivable_costmap` is a (data, params) tuple where
+        data is the (H, W) int8 array from project_drivable_to_grid:
+        0 = drivable, -1 = unknown. We render the 0-cells only.
+        """
+        try:
+            data, params = drivable_costmap
+        except (TypeError, ValueError):
+            return
+
+        if data is None or data.size == 0:
+            try:
+                rr.log("world/drivable_costmap", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+
+        drivable = np.argwhere(data == 0)
+        if drivable.shape[0] == 0:
+            try:
+                rr.log("world/drivable_costmap", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+
+        res = float(params.resolution_m)
+        ox  = float(params.origin_x_m)
+        oy  = float(params.origin_y_m)
+        rows = drivable[:, 0].astype(np.float32)
+        cols = drivable[:, 1].astype(np.float32)
+        xs = ox + (cols + 0.5) * res
+        ys = oy + (rows + 0.5) * res
+        zs = np.zeros_like(xs, dtype=np.float32)
+        positions = np.stack([xs, ys, zs], axis=1)
+
+        try:
+            rr.log(
+                "world/drivable_costmap",
+                rr.Points3D(
+                    positions=positions,
+                    radii=res * 0.5,
+                    colors=[(60, 200, 80, 200)] * positions.shape[0],
+                ),
+            )
+        except Exception as e:
+            log.debug("DrivableCostmap log failed: %s", e)
 
     def _log_occupancy_grid(self, rr, occupancy_grid_2d) -> None:
         """

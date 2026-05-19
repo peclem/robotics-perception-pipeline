@@ -223,6 +223,14 @@ room_layer:
   erosion_m: 0.45             # closes doorways up to 0.9 m wide
   min_area_m2: 1.0            # discard components smaller than this
   polygon_simplify_m: 0.05    # cv2.approxPolyDP tolerance
+drivable_costmap:
+  # Top-down OccupancyGrid produced by IPM-projecting the semantic
+  # segmenter's drivable mask. Reuses occupancy_grid's grid spec
+  # (same frame/origin/resolution → Nav2 fuses cleanly). Needs
+  # semantic.enabled=true; use_depth needs depth.enabled too.
+  enabled: false
+  use_depth: true             # back-project via dense depth when available
+  z_ground_m: 0.0             # ground plane z in world frame
 occupancy_3d:
   enabled: false            # publish sparse 3D voxels (PointCloud2 + optional Octomap)
   resolution_m: 0.10        # 10 cm per voxel; smaller → more memory + bigger PointCloud2

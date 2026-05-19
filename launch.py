@@ -47,6 +47,9 @@ from perception.semantic_segmenter import (
 from world_model.occupancy_grid import (
     OccupancyGridBuilder, OccupancyGridParams,
 )
+from world_model.drivable_projector import (
+    DrivableProjectorParams, project_drivable_to_grid,
+)
 from world_model.occupancy_3d import (
     Occupancy3DBuilder, Occupancy3DParams,
 )
@@ -171,6 +174,7 @@ class Pipeline:
         self._occupancy_grid_builder = self._build_occupancy_grid_builder()
         self._occupancy_3d_builder   = self._build_occupancy_3d_builder()
         self._room_layer             = self._build_room_layer()
+        self._drivable_projector_params = self._build_drivable_projector_params()
 
         # Health monitor: per-stage latency budgets + degraded-mode
         # signalling. Always built (cheap); reporting is enabled when
@@ -237,6 +241,33 @@ class Pipeline:
             min_area_m2=rl.min_area_m2,
             polygon_simplify_m=rl.polygon_simplify_m,
         ))
+
+    def _build_drivable_projector_params(self) -> Optional[DrivableProjectorParams]:
+        """
+        DrivableProjectorParams for the standalone drivable-costmap
+        layer, built once. Reuses the occupancy_grid block's grid spec
+        regardless of occupancy_grid.enabled — that block is the
+        canonical grid definition; the `enabled` flag only gates the
+        dynamic-obstacle builder, not the spec itself.
+        """
+        dc = self._cfg.drivable_costmap
+        if not dc.enabled:
+            return None
+        og = self._cfg.occupancy_grid
+        log.info(
+            "DrivableCostmap enabled (use_depth=%s, z_ground=%.2f, "
+            "grid=%dx%d m at %.2f m/cell)",
+            dc.use_depth, dc.z_ground_m,
+            og.size_x_m, og.size_y_m, og.resolution_m,
+        )
+        return DrivableProjectorParams(
+            grid_params=OccupancyGridParams(
+                resolution_m=og.resolution_m,
+                size_x_m=og.size_x_m, size_y_m=og.size_y_m,
+                origin_x_m=og.origin_x_m, origin_y_m=og.origin_y_m,
+            ),
+            z_ground_m=dc.z_ground_m,
+        )
 
     def _build_health_monitor(self) -> HealthMonitor:
         """Construct a HealthMonitor with stages from config."""
@@ -533,6 +564,34 @@ class Pipeline:
                 )
                 rooms = self._room_layer.rooms
 
+            # Drivable freespace costmap. Needs the semantic mask (for
+            # the drivable bool image), camera pose (for the world
+            # transform), and optionally a depth map (for slope/stair
+            # handling). Silently skipped when any of those are missing.
+            drivable_costmap = None
+            if (self._drivable_projector_params is not None
+                    and semantic_mask is not None
+                    and camera_pose is not None):
+                from perception.semantic_segmenter import drivable_mask as _drv
+                d_mask = _drv(semantic_mask)
+                if d_mask.any():
+                    use_depth = self._cfg.drivable_costmap.use_depth
+                    depth_arr = next(
+                        (e.depth_map for e in depth_estimates_list
+                         if e.depth_map is not None),
+                        None,
+                    ) if use_depth else None
+                    # Mask + depth resolutions can disagree if the
+                    # segmenter resampled; in that case fall back to
+                    # flat-ground rather than raise.
+                    if depth_arr is not None and depth_arr.shape != d_mask.shape:
+                        depth_arr = None
+                    drivable_costmap = project_drivable_to_grid(
+                        d_mask, frame.intrinsics, camera_pose,
+                        self._drivable_projector_params,
+                        depth_map=depth_arr,
+                    )
+
             annotated = self._visualizer.draw(
                 frame=frame,
                 detections=detections,
@@ -566,6 +625,12 @@ class Pipeline:
                     (occ_grid_arr, self._occupancy_grid_builder.params)
                     if (occ_grid_arr is not None
                         and self._occupancy_grid_builder is not None)
+                    else None
+                ),
+                drivable_costmap=(
+                    (drivable_costmap, self._drivable_projector_params.grid_params)
+                    if (drivable_costmap is not None
+                        and self._drivable_projector_params is not None)
                     else None
                 ),
                 depth_map=next(

@@ -518,6 +518,29 @@ class OccupancyGridConfig:
 
 
 @dataclass
+class DrivableCostmapConfig:
+    """
+    Drivable-freespace costmap: top-down OccupancyGrid produced by
+    projecting the semantic segmenter's drivable mask through the
+    camera pose. Pure consumer-side config — the projector lives in
+    world_model.drivable_projector. Reuses OccupancyGridConfig grid
+    spec so the drivable costmap shares the dynamic-obstacle layer's
+    frame and resolution (Nav2 fuses them cleanly).
+
+    `use_depth=true` enables the depth-aware backend when a dense
+    depth map is available on the current frame; falls back to
+    flat-ground IPM otherwise. `z_ground_m` is the assumed ground
+    plane in the world frame.
+    """
+    enabled:     bool  = False
+    use_depth:   bool  = True
+    z_ground_m:  float = 0.0
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class RoomLayerConfigCfg:
     """
     Typed mirror of world_model.room_layer.RoomLayerConfig. Defaults
@@ -685,6 +708,7 @@ class PipelineConfig:
     pose_estimator:         PoseEstimatorConfig        = field(default_factory=PoseEstimatorConfig)
     occupancy_grid:         OccupancyGridConfig        = field(default_factory=OccupancyGridConfig)
     occupancy_3d:           Occupancy3DConfig          = field(default_factory=Occupancy3DConfig)
+    drivable_costmap:       DrivableCostmapConfig      = field(default_factory=DrivableCostmapConfig)
     room_layer:             RoomLayerConfigCfg         = field(default_factory=RoomLayerConfigCfg)
     appearance:             AppearanceConfig           = field(default_factory=AppearanceConfig)
     world_map:              WorldMapConfig             = field(default_factory=WorldMapConfig)
@@ -1162,6 +1186,7 @@ def _build(raw: dict) -> PipelineConfig:
     pe = raw.get("pose_estimator", {})
     og = raw.get("occupancy_grid", {})
     o3 = raw.get("occupancy_3d",   {})
+    dc = raw.get("drivable_costmap", {})
     rl = raw.get("room_layer",     {})
     ap = raw.get("appearance", {})
     wmap = raw.get("world_map", {})
@@ -1352,6 +1377,11 @@ def _build(raw: dict) -> PipelineConfig:
                 str(k): float(v) for k, v in
                 (o3.get("per_class_inflation_m") or {}).items()
             } or Occupancy3DConfig().per_class_inflation_m,
+        ),
+        drivable_costmap=DrivableCostmapConfig(
+            enabled=    bool(dc.get("enabled", False)),
+            use_depth=  bool(dc.get("use_depth", True)),
+            z_ground_m= float(dc.get("z_ground_m", 0.0)),
         ),
         room_layer=RoomLayerConfigCfg(
             enabled=            bool(rl.get("enabled", False)),

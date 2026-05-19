@@ -1198,6 +1198,80 @@ class TestRerunOccupancyGrid2D:
         assert not self._by_path(logger._rr, "world/occupancy_grid")
 
 
+class TestRerunDrivableCostmap:
+    """world/drivable_costmap layer — mirror of TestRerunOccupancyGrid2D."""
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def _grid(self, drivable_cells, h=8, w=10):
+        """(H, W) int8 with 0 (drivable) at given cells, -1 elsewhere."""
+        g = np.full((h, w), -1, dtype=np.int8)
+        for r, c in drivable_cells:
+            g[r, c] = 0
+        return g
+
+    def _params(self, resolution_m=0.5, origin_x_m=-2.5, origin_y_m=-2.0):
+        from world_model.occupancy_grid import OccupancyGridParams
+        return OccupancyGridParams(
+            resolution_m=resolution_m,
+            size_x_m=resolution_m * 10, size_y_m=resolution_m * 8,
+            origin_x_m=origin_x_m, origin_y_m=origin_y_m,
+        )
+
+    def test_drivable_cells_emit_points3d_at_z0(self, cfg):
+        logger = self._ready_logger(cfg)
+        grid = self._grid([(2, 3)])
+        # Cell (row=2, col=3) at res=0.5 with origin (-2.5, -2.0)
+        # has centre at world (x = -2.5 + 3.5*0.5 = -0.75,
+        #                      y = -2.0 + 2.5*0.5 = -0.75, z=0).
+        logger.log_frame(make_frame(), [], [],
+                         drivable_costmap=(grid, self._params()))
+        prim = self._by_path(logger._rr, "world/drivable_costmap")[-1]["primitive"]
+        assert prim["type"] == "Points3D"
+        assert prim["positions"].shape == (1, 3)
+        np.testing.assert_allclose(prim["positions"][0], [-0.75, -0.75, 0.0],
+                                    atol=1e-6)
+
+    def test_unknown_cells_skipped(self, cfg):
+        # All -1 → Clear.
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [],
+                         drivable_costmap=(self._grid([]),
+                                            self._params()))
+        clears = [c for c in self._by_path(logger._rr, "world/drivable_costmap")
+                  if c["primitive"]["type"] == "Clear"]
+        assert clears
+
+    def test_radius_matches_half_resolution(self, cfg):
+        logger = self._ready_logger(cfg)
+        grid = self._grid([(0, 0)])
+        logger.log_frame(make_frame(), [], [],
+                         drivable_costmap=(grid,
+                                            self._params(resolution_m=0.4)))
+        prim = self._by_path(logger._rr, "world/drivable_costmap")[-1]["primitive"]
+        assert prim["radii"] == 0.2
+
+    def test_multiple_cells_each_emit_point(self, cfg):
+        logger = self._ready_logger(cfg)
+        grid = self._grid([(0, 0), (1, 1), (2, 2)])
+        logger.log_frame(make_frame(), [], [],
+                         drivable_costmap=(grid, self._params()))
+        prim = self._by_path(logger._rr, "world/drivable_costmap")[-1]["primitive"]
+        assert prim["positions"].shape == (3, 3)
+
+    def test_no_arg_means_no_call(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [])
+        assert not self._by_path(logger._rr, "world/drivable_costmap")
+
+
 class TestWSLHostDetect:
 
     def test_explicit_host_unchanged(self):

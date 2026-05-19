@@ -211,6 +211,7 @@ class DebugVisualizer:
         scene_objects=None,
         world_map=None,
         occupancy_grid_2d=None,
+        drivable_costmap=None,
         depth_map=None,
         health_monitor=None,
         vio_ekf=None,
@@ -221,6 +222,7 @@ class DebugVisualizer:
             semantic_mask=semantic_mask, camera_pose=camera_pose,
             scene_objects=scene_objects, world_map=world_map,
             occupancy_grid_2d=occupancy_grid_2d,
+            drivable_costmap=drivable_costmap,
             depth_map=depth_map,
         )
         self._rlog.log_metrics(
