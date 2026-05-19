@@ -334,13 +334,17 @@ class Pipeline:
         if not wm.enabled:
             return None
         log.info(
-            "WorldMap enabled (gate=%.2f m, sim_thr=%.2f)",
+            "WorldMap enabled (gate=%.2f m, sim_thr=%.2f, "
+            "max_age=%.0f s, max_entries=%d)",
             wm.spatial_gate_m, wm.similarity_threshold,
+            wm.max_age_s, wm.max_entries,
         )
         return WorldMap(
             spatial_gate_m=wm.spatial_gate_m,
             similarity_threshold=wm.similarity_threshold,
             allow_spatial_only=wm.allow_spatial_only,
+            max_age_s=wm.max_age_s,
+            max_entries=wm.max_entries,
         )
 
     def _build_pose_estimator(self, raw: dict):

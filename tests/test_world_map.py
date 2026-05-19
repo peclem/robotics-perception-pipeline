@@ -359,3 +359,114 @@ class TestRevisitScenario:
         # n_observations incremented, last_seen updated.
         assert e2.n_observations == 2
         assert e2.last_seen == 100.0
+
+
+class TestEviction:
+    """Capacity + max-age eviction; off-by-default backwards-compat."""
+
+    def _insert_n(self, wm, n: int, base_x: float = 0.0,
+                   t_start: float = 0.0, dt: float = 1.0):
+        """Insert n entries at distinct positions + monotonic timestamps."""
+        for k in range(n):
+            wm.insert(
+                "chair", 56,
+                np.array([base_x + k * 100.0, 0.0, 0.0]),  # far apart
+                None, StabilityClass.STATIC, t_start + k * dt,
+            )
+
+    def test_defaults_keep_monotonic_growth(self):
+        # No max_age, no max_entries → existing behaviour preserved.
+        wm = WorldMap()
+        self._insert_n(wm, 50, t_start=1.0, dt=1.0)
+        assert wm.n_entries == 50
+
+    def test_max_age_drops_stale_entries(self):
+        wm = WorldMap(max_age_s=10.0)
+        # First 5 entries at t=1..5, then a fresh entry at t=100.
+        # The fresh insert triggers the prune; entries at t<90 go.
+        self._insert_n(wm, 5, t_start=1.0, dt=1.0)
+        assert wm.n_entries == 5
+        wm.insert(
+            "chair", 56, np.array([99.0, 0.0, 0.0]),
+            None, StabilityClass.STATIC, 100.0,
+        )
+        # Only the entry inserted at t=100 survives.
+        assert wm.n_entries == 1
+
+    def test_max_age_keeps_recent_entries(self):
+        wm = WorldMap(max_age_s=10.0)
+        # Insert at t=1, then re-insert another at t=5 — both within
+        # the 10s window of the prune trigger at t=5.
+        self._insert_n(wm, 5, t_start=1.0, dt=1.0)
+        # Now insert at t=8 — all five originals are within 10s.
+        wm.insert("chair", 56, np.array([99.0, 0.0, 0.0]),
+                  None, StabilityClass.STATIC, 8.0)
+        # All 6 within the window.
+        assert wm.n_entries == 6
+
+    def test_max_entries_lru_evicts_oldest(self):
+        wm = WorldMap(max_entries=3)
+        # Insert 5 entries at monotonic timestamps; cap is 3, so the
+        # two oldest should drop.
+        self._insert_n(wm, 5, t_start=1.0, dt=1.0)
+        assert wm.n_entries == 3
+        # Surviving entries are the three most-recent (last_seen = 3,4,5).
+        kept = sorted(e.last_seen for e in wm.all_entries())
+        assert kept == [3.0, 4.0, 5.0]
+
+    def test_re_association_refreshes_lru_age(self):
+        # Re-associating an old entry should update its last_seen, so
+        # it survives a subsequent capacity-eviction.
+        wm = WorldMap(max_entries=2, spatial_gate_m=1.0,
+                       similarity_threshold=-1.0,  # disable appearance gate
+                       allow_spatial_only=True)
+        wm.insert("chair", 56, np.array([0.0, 0.0, 0.0]),
+                  None, StabilityClass.STATIC, 1.0)   # pid 1, t=1
+        wm.insert("chair", 56, np.array([10.0, 0.0, 0.0]),
+                  None, StabilityClass.STATIC, 2.0)   # pid 2, t=2
+        # Re-associate the FIRST entry at t=3 — refreshes its last_seen.
+        e, was_new = wm.insert_or_re_associate(
+            "chair", 56, np.array([0.0, 0.0, 0.0]),
+            None, StabilityClass.STATIC, 3.0,
+        )
+        assert not was_new
+        assert e.persistent_id == 1
+        # Now insert a third entry. With max_entries=2, the LRU drop
+        # should target pid 2 (now the oldest by last_seen), NOT pid 1.
+        wm.insert("chair", 56, np.array([20.0, 0.0, 0.0]),
+                  None, StabilityClass.STATIC, 4.0)
+        ids = {e.persistent_id for e in wm.all_entries()}
+        assert ids == {1, 3}, f"expected pid 1+3 to survive, got {ids}"
+
+    def test_combined_max_age_and_max_entries(self):
+        # Both knobs active: age drops first, capacity caps what's left.
+        wm = WorldMap(max_age_s=5.0, max_entries=2)
+        self._insert_n(wm, 5, t_start=1.0, dt=1.0)   # 5 entries at t=1..5
+        # Insert at t=10 → age cutoff = 5, so t=1..4 are stale (dropped);
+        # t=5 + new t=10 → 2 entries, exactly at the cap.
+        wm.insert("chair", 56, np.array([99.0, 0.0, 0.0]),
+                  None, StabilityClass.STATIC, 10.0)
+        assert wm.n_entries == 2
+        last_seens = sorted(e.last_seen for e in wm.all_entries())
+        assert last_seens == [5.0, 10.0]
+
+    def test_public_prune_works_without_insert(self):
+        wm = WorldMap(max_age_s=10.0)
+        self._insert_n(wm, 5, t_start=1.0, dt=1.0)
+        # No insert — call prune manually at a future "now".
+        dropped = wm.prune(now=100.0)
+        assert dropped == 5
+        assert wm.n_entries == 0
+
+    def test_disabled_max_age_when_zero(self):
+        wm = WorldMap(max_age_s=0.0)
+        wm.insert("chair", 56, np.array([0.0, 0.0, 0.0]),
+                  None, StabilityClass.STATIC, 1.0)
+        # Prune at a much later "now" — without aging, nothing drops.
+        assert wm.prune(now=1e9) == 0
+        assert wm.n_entries == 1
+
+    def test_disabled_max_entries_when_zero(self):
+        wm = WorldMap(max_entries=0)
+        self._insert_n(wm, 100, t_start=1.0, dt=1.0)
+        assert wm.n_entries == 100

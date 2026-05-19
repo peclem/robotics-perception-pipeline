@@ -140,6 +140,8 @@ world_map:
   spatial_gate_m: 1.5       # re-association candidates within this distance
   similarity_threshold: 0.75   # cosine threshold ∈ [-1, 1]
   allow_spatial_only: true  # fall back to spatial-only when embeddings missing
+  max_age_s: 0.0            # 0 = grow forever; >0 drops entries unseen this long
+  max_entries: 0            # 0 = no cap; >0 LRU-evicts to keep len <= max_entries
 imu:
   type: "null"          # 'null' | 'synthetic' (hardware backends slot in here)
   frame_id: "imu_link"

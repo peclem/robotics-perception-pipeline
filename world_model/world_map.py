@@ -35,15 +35,20 @@ entries of the same class. Cross-class matches are always wrong
 
 Eviction
 --------
-WorldMap grows monotonically — entries are never auto-evicted. A
-production deployment would add:
-  - Max-age cap (e.g. forget anything not seen in 1 day)
-  - Memory cap (e.g. keep most recent 10000 entries)
-  - "Revisited and not seen" eviction (robot returns to a region
-    and doesn't observe an entry that should be there)
+Two opt-in mechanisms (off by default → backwards-compatible
+monotonic growth):
 
-Left out of v1 because the right eviction policy is
-deployment-specific. Add when a real session exposes the need.
+  - max_age_s        forget any entry whose last_seen is older than
+                     now - max_age_s. Run after every insert /
+                     re-associate.
+  - max_entries      cap on the total number of entries. When the cap
+                     is exceeded, drop the LRU entries (oldest
+                     last_seen first) until back at the cap.
+
+The "revisited and not seen" eviction (robot returns to a region and
+doesn't observe an entry that should be there) is deferred — it
+requires knowing which regions the robot has just observed, which is
+a planner / sensor-FOV concern that doesn't belong in this layer.
 
 Reference
 ---------
@@ -148,6 +153,13 @@ class WorldMap:
                             embedding, fall back to spatial-only
                             re-association. If False, require both
                             embeddings.
+    max_age_s             : if > 0, entries whose last_seen is older
+                            than now - max_age_s are dropped on every
+                            insert / re-associate. 0 disables aging.
+    max_entries           : if > 0, total entries are capped at this
+                            number — exceeding it drops the oldest
+                            (smallest last_seen) until at the cap.
+                            0 disables the cap.
     """
 
     def __init__(
@@ -155,10 +167,14 @@ class WorldMap:
         spatial_gate_m:       float = 1.5,
         similarity_threshold: float = 0.75,
         allow_spatial_only:   bool  = True,
+        max_age_s:            float = 0.0,
+        max_entries:          int   = 0,
     ) -> None:
         self._spatial_gate_m       = float(spatial_gate_m)
         self._similarity_threshold = float(similarity_threshold)
         self._allow_spatial_only   = bool(allow_spatial_only)
+        self._max_age_s            = float(max_age_s)
+        self._max_entries          = int(max_entries)
         self._entries: Dict[int, WorldMapEntry] = {}
         self._next_id: int = 1
 
@@ -203,6 +219,7 @@ class WorldMap:
         )
         self._entries[self._next_id] = entry
         self._next_id += 1
+        self._maybe_prune(timestamp)
         return entry
 
     def re_associate(
@@ -268,6 +285,7 @@ class WorldMap:
         existing = self.re_associate(class_name, position_world, embedding)
         if existing is not None:
             existing.update(position_world, embedding, timestamp)
+            self._maybe_prune(timestamp)
             return existing, False
         return self.insert(
             class_name=class_name, class_id=class_id,
@@ -293,6 +311,47 @@ class WorldMap:
                 results.append((dist, entry))
         results.sort(key=lambda t: t[0])
         return results
+
+    # ------------------------------------------------------------------
+    # Eviction
+    # ------------------------------------------------------------------
+
+    def _maybe_prune(self, now: float) -> int:
+        """Apply age + capacity eviction. Returns total entries dropped."""
+        n_dropped = 0
+        if self._max_age_s > 0.0:
+            n_dropped += self._prune_by_age(now)
+        if self._max_entries > 0 and len(self._entries) > self._max_entries:
+            n_dropped += self._prune_by_capacity()
+        return n_dropped
+
+    def _prune_by_age(self, now: float) -> int:
+        cutoff = now - self._max_age_s
+        stale = [pid for pid, e in self._entries.items()
+                 if e.last_seen < cutoff]
+        for pid in stale:
+            del self._entries[pid]
+        return len(stale)
+
+    def _prune_by_capacity(self) -> int:
+        # LRU by last_seen — oldest first. Cap is a hard ceiling, so
+        # drop exactly the overflow count.
+        overflow = len(self._entries) - self._max_entries
+        if overflow <= 0:
+            return 0
+        ordered = sorted(self._entries.items(),
+                         key=lambda kv: kv[1].last_seen)
+        for pid, _entry in ordered[:overflow]:
+            del self._entries[pid]
+        return overflow
+
+    def prune(self, now: float) -> int:
+        """
+        Public hook to apply eviction outside the insert path — useful
+        if the caller wants to age stale entries periodically even when
+        no insert is happening. Returns total dropped.
+        """
+        return self._maybe_prune(now)
 
     def reset(self) -> None:
         """Drop all entries. Call between deployments."""

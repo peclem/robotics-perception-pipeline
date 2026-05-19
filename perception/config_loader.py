@@ -481,6 +481,9 @@ class WorldMapConfig:
     spatial_gate_m:       float  = 1.5
     similarity_threshold: float  = 0.75
     allow_spatial_only:   bool   = True
+    # Eviction (both off by default → monotonic-growth baseline).
+    max_age_s:            float  = 0.0     # 0 disables aging
+    max_entries:          int    = 0       # 0 disables capacity cap
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -1082,6 +1085,17 @@ def _validate(raw: dict) -> None:
             f"world_map.similarity_threshold={sim_thr} must lie in [-1, 1] "
             "(cosine similarity range)."
         )
+    # 0 means "disabled" for both eviction knobs; reject negatives.
+    max_age = wmap_raw.get("max_age_s")
+    if max_age is not None and float(max_age) < 0.0:
+        errors.append(
+            f"world_map.max_age_s={max_age} must be >= 0 (0 disables aging)."
+        )
+    max_ent = wmap_raw.get("max_entries")
+    if max_ent is not None and int(max_ent) < 0:
+        errors.append(
+            f"world_map.max_entries={max_ent} must be >= 0 (0 disables cap)."
+        )
     _require_positive_int(errors, pe_raw, "pose_estimator.stride")
     _require_positive_int(errors, pe_raw, "pose_estimator.patches_per_frame")
 
@@ -1355,6 +1369,8 @@ def _build(raw: dict) -> PipelineConfig:
             spatial_gate_m=       float(wmap.get("spatial_gate_m", 1.5)),
             similarity_threshold= float(wmap.get("similarity_threshold", 0.75)),
             allow_spatial_only=   bool(wmap.get("allow_spatial_only", True)),
+            max_age_s=            float(wmap.get("max_age_s", 0.0)),
+            max_entries=          int(wmap.get("max_entries", 0)),
         ),
         health_monitor=HealthMonitorConfig(
             enabled=           bool(hm.get("enabled", True)),
