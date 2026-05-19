@@ -50,7 +50,9 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] Camera motion comp.      LK optical flow + affine RANSAC   ║
     ║  [✓] Monocular depth          Depth Anything V2, metric         ║
     ║  [✓] Monocular ego-pose       DPVO (deep patch VO), 15 Hz       ║
-    ║  [ ] ReID embeddings          OSNet, IoU + cosine cost          ║
+    ║  [✓] ReID embeddings          DINOv2 (foundation, class-       ║
+    ║                                agnostic). IoU + cosine cost,    ║
+    ║                                StrongSORT-style blend.          ║
     ║  [✓] Stereo depth             Classical (cv2.StereoSGBM) +      ║
     ║                               neural (RAFT-Stereo, optional)    ║
     ║                               (cv2.StereoSGBM). Drop-in under   ║
@@ -134,6 +136,14 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] Health monitor           per-stage LatencyTracker + topic  ║
     ║                               inter-arrival, OK/WARN/ERROR/     ║
     ║                               STALE on /diagnostics             ║
+    ║  [✓] Drivable freespace       IPM projection of the semantic   ║
+    ║      costmap                  drivable mask onto the ground.   ║
+    ║                               Depth-aware backend (back-       ║
+    ║                               project via dense depth) and     ║
+    ║                               flat-ground fallback. Output as  ║
+    ║                               nav_msgs/OccupancyGrid (0=drive, ║
+    ║                               -1=unknown) — fuses with the     ║
+    ║                               obstacle layer in Nav2.          ║
     ║  [ ] Static obstacle layer    pre-mapped walls; needs SLAM      ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
@@ -147,11 +157,24 @@ marked. Unimplemented components and their integration points are identified.
     ║      → List[(distance, ObjectState)] sorted, with covariance    ║
     ║                                                                  ║
     ║  ROS2 API:                                                       ║
-    ║    /perception/scene    vision_msgs/Detection3DArray             ║
-    ║    /perception/costmap  nav_msgs/OccupancyGrid (dynamic layer)   ║
-    ║    /perception/voxels   sensor_msgs/PointCloud2 (3D occupancy)   ║
-    ║    /perception/octomap  octomap_msgs/Octomap   (when installed)  ║
-    ║    /tf                  map → camera_frame (when ego-pose on)    ║
+    ║    /perception/scene             vision_msgs/Detection3DArray    ║
+    ║    /perception/costmap           nav_msgs/OccupancyGrid          ║
+    ║                                  (dynamic obstacle layer)        ║
+    ║    /perception/drivable_costmap  nav_msgs/OccupancyGrid          ║
+    ║                                  (drivable freespace, IPM-       ║
+    ║                                  projected from semantic mask)   ║
+    ║    /perception/drivable_mask     sensor_msgs/Image (mono8 —      ║
+    ║                                  image-space drivable mask)      ║
+    ║    /perception/voxels            sensor_msgs/PointCloud2         ║
+    ║                                  (3D occupancy)                  ║
+    ║    /perception/octomap           octomap_msgs/Octomap            ║
+    ║                                  (when octomap installed)        ║
+    ║    /perception/depth             sensor_msgs/Image (32FC1 —      ║
+    ║                                  dense metric depth)             ║
+    ║    /perception/odom              nav_msgs/Odometry (fused VIO    ║
+    ║                                  when vio.enabled, else visual)  ║
+    ║    /tf                           map → camera_frame              ║
+    ║                                  (when ego-pose on)              ║
     ║                                                                  ║
     ║  [ ] Global planner           Nav2 / RRT / A*                   ║
     ║  [ ] Local planner            DWA / TEB / MPC                   ║
@@ -553,6 +576,17 @@ behind both — the ROS2 layer is an adapter, not a port.
 
     /perception/image_raw  ──▶ pose_node  ──┬──▶ /perception/odom (nav_msgs/Odometry)
                                             └──▶ /tf  (map → camera_frame)
+                                            (fused VIO pose when vio.enabled,
+                                             bare visual pose otherwise)
+
+    /perception/image_raw  ──▶ depth_node  ──▶ /perception/depth
+                                               (sensor_msgs/Image 32FC1,
+                                                dense metric depth)
+
+    /perception/image_raw  ──▶ drivable_mask_node  ──▶ /perception/drivable_mask
+                                                       (sensor_msgs/Image mono8,
+                                                        Mask2Former drivable
+                                                        surface classes)
 
     /perception/tracks + /perception/odom ──▶ scene_graph_node ──▶ /perception/scene
                                                                    (vision_msgs/Detection3DArray
@@ -570,6 +604,15 @@ behind both — the ROS2 layer is an adapter, not a port.
                                                       (octomap_msgs/Octomap,
                                                        only if octomap +
                                                        octomap_msgs installed)
+
+    /perception/drivable_mask + /perception/depth + tf
+                       ──▶ drivable_costmap_node ──▶ /perception/drivable_costmap
+                                                     (nav_msgs/OccupancyGrid,
+                                                      IPM-projected drivable
+                                                      freespace; depth-aware
+                                                      when /perception/depth
+                                                      is available, flat-
+                                                      ground fallback)
 
     all /perception/* topics ──▶ health_monitor_node ──▶ /diagnostics
                                   (diagnostic_msgs/DiagnosticArray @ 1 Hz,
@@ -598,7 +641,7 @@ behind both — the ROS2 layer is an adapter, not a port.
         config_path:=/abs/path/to/config/default.yaml
 
     # Verify in another shell:
-    ros2 topic list                            # 7 /perception/* topics
+    ros2 topic list                            # 10 /perception/* topics
     ros2 topic hz /perception/scene            # ~6 Hz on this hardware
     ros2 topic echo /perception/scene --once   # single Detection3DArray
 
@@ -609,7 +652,7 @@ graph runs at ~6 Hz at 1280×720 due to:
 
 - DDS serialisation of 1280×720 BGR images (~2.7 MB / msg / topic)
 - Per-process CUDA context overhead (detection + pose both load torch)
-- Synchronous callback chains across 5 processes
+- Synchronous callback chains across 10 processes
 
 The graph is a faithful adapter, not a tuned production deployment.
 
@@ -655,15 +698,18 @@ extension first — see "DPVO setup" above.
 
     python3 -m pytest tests/ -m "not integration" -v
 
-535 unit tests across detection, tracking, state estimation (including
+748 unit tests across detection, tracking, state estimation (including
 bias-aware IMU pre-integration with numerical Jacobian verification),
 world model, coordinate frames (TransformTree), DPVO wrapper, mono +
-stereo depth, occupancy grid, stability classification, appearance
-extractor, WorldMap, health monitor, IMU interface, visualisation, and
-benchmarks. All tests use SyntheticCamera / synthetic IMU / synthetic
-data — no hardware required. Integration tests (real GPU, live DPVO /
-DINOv2 models) are marked and excluded from CI; run with
-`pytest -m integration`.
+stereo depth, occupancy grid (2D + 3D), drivable freespace IPM
+projector (flat-ground + depth-aware), stability classification,
+appearance extractor, WorldMap (with opt-in eviction), room layer,
+health monitor, IMU interface, pose-estimator factory, visualisation,
+and benchmarks. All tests use SyntheticCamera / synthetic IMU /
+synthetic data — no hardware required. Integration tests (real GPU,
+live DPVO / DINOv2 / Mask2Former models) are marked and excluded from
+CI; run with `pytest -m integration`. CI runs the unit suite on every
+push and PR to main (see badge at the top).
 
 ---
 
@@ -802,16 +848,21 @@ Environment variable overrides: DEVICE=cpu, RERUN_ENABLED=false.
                             detection_node           Detection2DArray
                             tracking_node            tracked Detection2DArray
                             pose_node                Odometry + tf broadcast
+                                                     (fused VIO when vio.enabled)
+                            depth_node               Image 32FC1 (dense metric depth)
                             scene_graph_node         Detection3DArray
                             occupancy_grid_node      OccupancyGrid (Nav2 costmap-ready)
                             occupancy_3d_node        PointCloud2 + optional Octomap
+                            drivable_mask_node       Image mono8 (semantic drivable mask)
+                            drivable_costmap_node    OccupancyGrid (IPM-projected
+                                                     drivable freespace, Nav2 fusable)
                             health_monitor_node      DiagnosticArray
                             composite_node           single-process bundle (perf experiment)
     scripts/             Calibration, benchmark (MOT17, DPVO latency),
                           detector training
     third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
                           — not committed; see DPVO setup in README
-    tests/               675 unit tests — all hardware-free; integration
+    tests/               748 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 
