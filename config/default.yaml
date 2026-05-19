@@ -86,8 +86,10 @@ visualization:
   show_covariance_ellipse: true
   show_nis: false
   show_stats_overlay: true
+  show_track_history: true
   bbox_thickness: 2
   velocity_arrow_scale: 0.5
+  track_history_max_points: 32
 world_model:
   max_history: 30
   # Legacy field — applies to DYNAMIC objects only. Per-class overrides

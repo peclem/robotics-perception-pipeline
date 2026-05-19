@@ -320,9 +320,11 @@ class _FakeRR:
     def Boxes2D(self, **kw):               return {"type": "Boxes2D", **kw}
     def Points3D(self, **kw):              return {"type": "Points3D", **kw}
     def LineStrips3D(self, strips, **kw):  return {"type": "LineStrips3D",
-                                                    "n": len(strips), **kw}
+                                                    "n": len(strips),
+                                                    "strips": list(strips), **kw}
     def LineStrips2D(self, strips, **kw):  return {"type": "LineStrips2D",
-                                                    "n": len(strips), **kw}
+                                                    "n": len(strips),
+                                                    "strips": list(strips), **kw}
     def Arrows2D(self, **kw):              return {"type": "Arrows2D", **kw}
     def SegmentationImage(self, arr):      return {"type": "SegmentationImage",
                                                     "shape": arr.shape}
@@ -802,6 +804,90 @@ class TestRerunWorldMap:
         paths = {c["path"] for c in logger._rr.calls}
         assert "world/world_map/visible"    not in paths
         assert "world/world_map/remembered" not in paths
+
+
+# ---------------------------------------------------------------------------
+# TestRerunTrackHistory — past-position polylines per track
+# ---------------------------------------------------------------------------
+
+class TestRerunTrackHistory:
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def _seed_history(self, track, points):
+        """Push synthetic KFSnapshot entries onto track.history."""
+        from state_estimation.kalman_filter import KFSnapshot
+        for k, (x, y) in enumerate(points):
+            state = np.zeros(8, dtype=np.float64)
+            state[0], state[1] = float(x), float(y)
+            track.history.append(KFSnapshot(
+                timestamp=float(k), frame_idx=k,
+                state=state, covariance=np.eye(8),
+                nis=float("nan"), n_updates=k + 1,
+            ))
+
+    def test_polyline_emitted_for_history_ge_2(self, cfg):
+        logger = self._ready_logger(cfg)
+        track = make_track(cfg)
+        self._seed_history(track, [(10, 10), (20, 20), (30, 25)])
+        logger.log_frame(make_frame(), [], [track])
+        hist = self._by_path(logger._rr, "world/tracks/history")[-1]
+        prim = hist["primitive"]
+        assert prim["type"] == "LineStrips2D"
+        assert prim["n"] == 1
+
+    def test_single_point_history_skipped(self, cfg):
+        logger = self._ready_logger(cfg)
+        track = make_track(cfg)
+        self._seed_history(track, [(10, 10)])
+        logger.log_frame(make_frame(), [], [track])
+        hist = self._by_path(logger._rr, "world/tracks/history")[-1]
+        # Single-point trail is not meaningful → Clear.
+        assert hist["primitive"]["type"] == "Clear"
+
+    def test_history_capped_at_max_points(self, cfg):
+        # Default cap is 32 — feed 50, expect the polyline to carry the
+        # most-recent 32 points.
+        logger = self._ready_logger(cfg)
+        track = make_track(cfg)
+        self._seed_history(track, [(k, k) for k in range(50)])
+        logger.log_frame(make_frame(), [], [track])
+        hist = self._by_path(logger._rr, "world/tracks/history")[-1]
+        prim = hist["primitive"]
+        assert prim["type"] == "LineStrips2D"
+        assert prim["n"] == 1
+        strip = prim["strips"][0]
+        assert strip.shape == (32, 2)
+        # First point in the strip is index 18 (50 - 32) — confirms we
+        # kept the most recent, not the oldest.
+        np.testing.assert_allclose(strip[0],  [18.0, 18.0], atol=1e-6)
+        np.testing.assert_allclose(strip[-1], [49.0, 49.0], atol=1e-6)
+
+    def test_disabled_flag_skips_layer(self, cfg):
+        # Disable show_track_history; layer should not be emitted at all
+        # — and no Clear either, since the gating short-circuits before
+        # reaching _log_track_history.
+        cfg.visualization.show_track_history = False
+        logger = self._ready_logger(cfg)
+        track = make_track(cfg)
+        self._seed_history(track, [(10, 10), (20, 20)])
+        logger.log_frame(make_frame(), [], [track])
+        # Should be no history-path calls at all.
+        assert not self._by_path(logger._rr, "world/tracks/history")
+
+    def test_no_tracks_clears_history_entity(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [])
+        clears = [c for c in self._by_path(logger._rr, "world/tracks/history")
+                  if c["primitive"]["type"] == "Clear"]
+        assert clears, "expected Clear on world/tracks/history when no tracks"
 
 
 class TestWSLHostDetect:

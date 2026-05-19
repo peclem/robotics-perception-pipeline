@@ -16,6 +16,7 @@ world/detections/boxes      — raw YOLOv8 output (grey)
 world/tracks/boxes          — confirmed KF-filtered tracks (colour-coded)
 world/tracks/velocity       — KF velocity vectors (Arrows2D)
 world/tracks/covariance     — 2σ position ellipses (LineStrips2D)
+world/tracks/history        — past centroid trail per track (LineStrips2D)
 world/world_map/visible     — WorldMap entries seen this frame (bright)
 world/world_map/remembered  — WorldMap entries not currently visible (faded)
 metrics/detect_ms           — detector latency time series
@@ -317,6 +318,7 @@ class RerunLogger:
                 rr.log("world/tracks/boxes",      rr.Clear(recursive=False))
                 rr.log("world/tracks/velocity",   rr.Clear(recursive=False))
                 rr.log("world/tracks/covariance", rr.Clear(recursive=False))
+                rr.log("world/tracks/history",    rr.Clear(recursive=False))
             except Exception:
                 pass
             return
@@ -346,6 +348,9 @@ class RerunLogger:
 
         if self._vis.show_nis:
             self._log_nis(rr, tracks)
+
+        if self._vis.show_track_history:
+            self._log_track_history(rr, tracks)
 
     def _log_velocity_arrows(self, rr, tracks: List[Track]) -> None:
         scale   = self._vis.velocity_arrow_scale
@@ -408,6 +413,46 @@ class RerunLogger:
                     )
                 except Exception as e:
                     log.debug("NIS log failed track %d: %s", track.track_id, e)
+
+    def _log_track_history(self, rr, tracks: List[Track]) -> None:
+        """
+        Past-position trail for each track, drawn as a LineStrips2D in
+        image space. The trail is taken from `track.history` — the
+        sequence of KFSnapshot objects appended on each KF update — and
+        truncated to the most recent `track_history_max_points` so
+        long-running tracks don't bloat the viewer.
+
+        Tracks with fewer than 2 history entries are skipped (a
+        single-point polyline is not meaningful).
+        """
+        max_pts = int(self._vis.track_history_max_points)
+        strips: list = []
+        colors: list = []
+        for track in tracks:
+            hist = getattr(track, "history", None)
+            if not hist or len(hist) < 2:
+                continue
+            recent = list(hist)[-max_pts:]
+            pts = np.array(
+                [snap.state[:2] for snap in recent], dtype=np.float32,
+            )
+            strips.append(pts)
+            colors.append(_track_colour_rgba(track.track_id))
+
+        if not strips:
+            try:
+                rr.log("world/tracks/history", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+
+        try:
+            rr.log(
+                "world/tracks/history",
+                rr.LineStrips2D(strips, colors=colors),
+            )
+        except Exception as e:
+            log.debug("Track history log failed: %s", e)
 
     # ------------------------------------------------------------------
     # New showcase layers (voxels, rooms, semantic mask)

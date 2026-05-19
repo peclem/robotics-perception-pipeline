@@ -259,8 +259,10 @@ class VisualizationConfig:
     show_covariance_ellipse: bool         = True
     show_nis:                bool         = False
     show_stats_overlay:      bool         = True
+    show_track_history:      bool         = True
     bbox_thickness:          int          = 2
     velocity_arrow_scale:    float        = 0.5
+    track_history_max_points: int         = 32
 
     def as_dict(self) -> dict:
         return asdict(self)
