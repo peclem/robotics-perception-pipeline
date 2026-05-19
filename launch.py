@@ -54,9 +54,10 @@ from world_model.room_layer import RoomLayer, RoomLayerConfig
 from perception.health_monitor import HealthMonitor, HealthStatus
 from world_model.world_map import WorldMap
 from perception.pose_estimator import NullPoseEstimator, CameraPose
-from perception.imu_interface import IMUInterface, NullIMU, SyntheticIMU
-from perception.vio_pose_estimator import VIOPoseEstimator
-from state_estimation.visual_inertial_ekf import VIOConfig as EKFConfig
+from perception.imu_interface import IMUInterface
+from perception.pose_estimator_factory import (
+    build_imu, build_pose_estimator, build_visual_pose_estimator,
+)
 from perception.transform_tree import TransformTree
 
 # ---------------------------------------------------------------------------
@@ -348,71 +349,16 @@ class Pipeline:
         )
 
     def _build_pose_estimator(self, raw: dict):
-        """
-        Factory for PoseEstimator backends keyed on pose_estimator.type.
-        When `vio.enabled=true`, the visual estimator is wrapped in a
-        VIOPoseEstimator that fuses it with the configured IMU via the
-        error-state EKF. Downstream consumers (TransformTree, SceneGraph)
-        get the fused pose with no changes.
-        """
-        visual = self._build_visual_pose_estimator(raw)
-        if not self._cfg.vio.enabled:
-            return visual
-        imu = self._build_imu()
-        v = self._cfg.vio
-        ekf_cfg = EKFConfig(
-            init_position_std_m=      v.init_position_std_m,
-            init_velocity_std_mps=    v.init_velocity_std_mps,
-            init_orientation_std_rad= v.init_orientation_std_rad,
-            init_bias_gyro_std=       v.init_bias_gyro_std,
-            init_bias_accel_std=      v.init_bias_accel_std,
-            bias_gyro_random_walk=    v.bias_gyro_random_walk,
-            bias_accel_random_walk=   v.bias_accel_random_walk,
-            visual_position_std_m=    v.visual_position_std_m,
-            visual_orientation_std_rad= v.visual_orientation_std_rad,
-            gravity_w=                tuple(v.gravity_w),
-        )
-        log.info(
-            "Wrapping %s in VIOPoseEstimator with IMU %r",
-            type(visual).__name__, type(imu).__name__,
-        )
-        return VIOPoseEstimator(
-            visual_estimator=visual, imu=imu, ekf_cfg=ekf_cfg,
-        )
+        """Delegates to perception.pose_estimator_factory."""
+        return build_pose_estimator(self._cfg, raw)
 
     def _build_visual_pose_estimator(self, raw: dict):
-        """The pre-fusion visual backend — same options as before."""
-        pe_type = self._cfg.pose_estimator.type
-        if pe_type == "null":
-            return NullPoseEstimator()
-        if pe_type == "dpvo":
-            from perception.dpvo_pose_estimator import DPVOPoseEstimator
-            est = DPVOPoseEstimator(raw)
-            log.info("Visual PoseEstimator: %r", est)
-            return est
-        raise ValueError(
-            f"Unknown pose_estimator.type={pe_type!r}. "
-            "Supported: 'null', 'dpvo'."
-        )
+        """Delegates to perception.pose_estimator_factory."""
+        return build_visual_pose_estimator(self._cfg, raw)
 
     def _build_imu(self) -> IMUInterface:
-        """Factory for IMUInterface keyed on imu.type."""
-        cfg = self._cfg.imu
-        if cfg.type == "null":
-            return NullIMU()
-        if cfg.type == "synthetic":
-            imu = SyntheticIMU(
-                motion=cfg.synthetic_motion,
-                rate_hz=cfg.rate_hz,
-                noise_std_accel=cfg.synthetic_noise_std_accel,
-                noise_std_gyro=cfg.synthetic_noise_std_gyro,
-                seed=cfg.synthetic_seed,
-            )
-            imu.open()
-            return imu
-        raise ValueError(
-            f"Unknown imu.type={cfg.type!r}. Supported: 'null', 'synthetic'."
-        )
+        """Delegates to perception.pose_estimator_factory."""
+        return build_imu(self._cfg)
 
     def _build_transform_tree(self) -> Optional[TransformTree]:
         """Construct TransformTree from config, or None when disabled."""

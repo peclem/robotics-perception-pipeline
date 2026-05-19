@@ -1,5 +1,6 @@
 """
-pose_node — wraps a PoseEstimator (NullPoseEstimator or DPVOPoseEstimator).
+pose_node — wraps a PoseEstimator (NullPoseEstimator, DPVOPoseEstimator,
+or VIOPoseEstimator when vio.enabled=true).
 
 Subscribes
 ----------
@@ -11,10 +12,19 @@ Publishes
   /perception/odom         nav_msgs/Odometry      (map ← camera_frame)
   /tf                      tf2 broadcast          (map → camera_frame)
 
-The PoseEstimator backend is selected by the project's config
-(pose_estimator.type). With type='null', this node still subscribes and
-broadcasts identity transforms — useful as a placeholder during dev.
-With type='dpvo', it runs the real estimator at the configured stride.
+Backend selection is delegated to
+`perception.pose_estimator_factory.build_pose_estimator`, which is
+the same factory the standalone `launch.py` uses. So:
+
+  pose_estimator.type='null'                → NullPoseEstimator
+  pose_estimator.type='dpvo'                → DPVOPoseEstimator
+  vio.enabled=true (any visual backend)     → VIOPoseEstimator wrapping
+                                              the visual + IMU via the
+                                              loosely-coupled error-
+                                              state EKF (fused pose)
+
+When VIO is on, the published /perception/odom + /tf are the fused
+pose, not the bare visual measurement.
 """
 
 from __future__ import annotations
@@ -32,7 +42,7 @@ from tf2_ros import TransformBroadcaster
 
 from perception.camera_interface import CameraFrame, CameraIntrinsics
 from perception.config_loader import load_config
-from perception.pose_estimator import NullPoseEstimator
+from perception.pose_estimator_factory import build_pose_estimator
 from robotics_perception_ros2.image_bridge import imgmsg_to_numpy
 
 
@@ -86,19 +96,10 @@ class PoseNode(Node):
         self._world_frame = self.get_parameter("world_frame").value
         self._camera_frame = self.get_parameter("camera_frame").value
 
-        # Factory mirrors launch.py's _build_pose_estimator.
-        pe_type = cfg.pose_estimator.type
-        if pe_type == "null":
-            self._estimator = NullPoseEstimator()
-            self.get_logger().info(
-                "PoseEstimator: NullPoseEstimator (identity transforms)"
-            )
-        elif pe_type == "dpvo":
-            from perception.dpvo_pose_estimator import DPVOPoseEstimator
-            self._estimator = DPVOPoseEstimator(raw)
-            self.get_logger().info(f"PoseEstimator: {self._estimator!r}")
-        else:
-            raise ValueError(f"unknown pose_estimator.type={pe_type!r}")
+        # Single source of truth for pose-backend construction. Picks
+        # up vio.enabled automatically — same code path as launch.py.
+        self._estimator = build_pose_estimator(cfg, raw)
+        self.get_logger().info(f"PoseEstimator: {self._estimator!r}")
 
         self._intrinsics: CameraIntrinsics | None = None
         self._frame_idx = 0
