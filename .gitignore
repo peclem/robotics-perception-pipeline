@@ -41,3 +41,7 @@ ros2_ws/log/
 
 # Local-only project instructions for Claude (not shared with collaborators)
 CLAUDE.md
+
+# Local engineering-decision document (not for distribution)
+ENGINEERING_DECISIONS.md
+ENGINEERING_DECISIONS.pdf
