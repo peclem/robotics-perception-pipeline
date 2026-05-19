@@ -895,6 +895,41 @@ class TestRerunTrackHistory:
 
 
 # ---------------------------------------------------------------------------
+# TestRerunRightImage — stereo right-eye image at world/camera/right
+# ---------------------------------------------------------------------------
+
+class TestRerunRightImage:
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def _stereo_frame(self, w=640, h=480) -> CameraFrame:
+        f = make_frame(w=w, h=h)
+        f.right_image = np.ones((h, w, 3), dtype=np.uint8) * 128
+        return f
+
+    def test_right_image_logged_when_present(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(self._stereo_frame(), [], [])
+        calls = self._by_path(logger._rr, "world/camera/right")
+        assert calls
+        prim = calls[-1]["primitive"]
+        assert prim["type"] == "Image"
+        assert prim["shape"] == (480, 640, 3)
+
+    def test_no_right_image_means_no_call(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_frame(make_frame(), [], [])   # right_image=None
+        assert not self._by_path(logger._rr, "world/camera/right")
+
+
+# ---------------------------------------------------------------------------
 # TestRerunHealthScalars — per-stage HealthMonitor latency/budget scalars
 # ---------------------------------------------------------------------------
 

@@ -12,6 +12,7 @@ set_time_seconds   → set_time("wall_time", duration=t)
 Entity hierarchy
 ----------------
 world/camera/image          — RGB camera frame
+world/camera/right          — right-eye image (when stereo)
 world/camera/depth          — dense depth map (when depth.enabled)
 world/detections/boxes      — raw YOLOv8 output (grey)
 world/tracks/boxes          — confirmed KF-filtered tracks (colour-coded)
@@ -267,6 +268,8 @@ class RerunLogger:
                 self._log_camera_pose(rr, frame, camera_pose)
 
             self._log_image(rr, frame)
+            if frame.right_image is not None:
+                self._log_right_image(rr, frame.right_image)
             if depth_map is not None:
                 self._log_depth_map(rr, depth_map)
             self._log_detections(rr, detections)
@@ -296,6 +299,19 @@ class RerunLogger:
             rr.log("world/camera/image", rr.Image(rgb))
         except Exception as e:
             log.debug("Image log failed: %s", e)
+
+    def _log_right_image(self, rr, right_image: np.ndarray) -> None:
+        """
+        Right-eye image of a stereo pair. Logged at `world/camera/right`
+        as a separate entity from `world/camera/image` so the viewer
+        can show both side-by-side. BGR → RGB conversion matches the
+        left-image path.
+        """
+        try:
+            rgb = right_image[:, :, ::-1].copy()
+            rr.log("world/camera/right", rr.Image(rgb))
+        except Exception as e:
+            log.debug("Right-image log failed: %s", e)
 
     def _log_depth_map(self, rr, depth_map: np.ndarray) -> None:
         """
