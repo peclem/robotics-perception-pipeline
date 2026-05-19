@@ -1,11 +1,71 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "robotics-perception-pipeline"
 version = "0.1.0"
+description = "Modular camera-based perception stack for mobile robotics — detection, tracking, KF/EKF state estimation, monocular depth, ego-pose (DPVO/VIO), semantic segmentation, and a probabilistic world model."
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "peclem", email = "pechnyk.clement@gmail.com" },
+]
+keywords = [
+    "robotics", "perception", "tracking", "kalman-filter",
+    "monocular-depth", "vio", "occupancy-grid", "ros2",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+# Core runtime deps — present in the minimum-viable import path
+# (camera_interface, scene_graph, occupancy_grid, drivable_projector,
+# Kalman / EKF, IMU preintegration, the visual-inertial EKF).
+# Heavy / optional backends live in [project.optional-dependencies]
+# so a downstream consumer that only wants the world model + state
+# estimation doesn't pay for transformers / ultralytics / rerun.
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pyyaml>=6.0",
+    "opencv-python-headless>=4.8",
+    "torch>=2.0",
+    "torchvision>=0.15",
+]
+
+[project.optional-dependencies]
+# YOLOv8n detector (Ultralytics).
+detect = ["ultralytics>=8.0"]
+# HuggingFace transformers — used by Depth Anything V2, Mask2Former,
+# and DINOv2 appearance. Same dep, three backends.
+appearance = ["transformers>=4.40", "accelerate>=0.30"]
+semantic   = ["transformers>=4.40", "accelerate>=0.30"]
+depth      = ["transformers>=4.40", "accelerate>=0.30"]
+# Rerun.io live + .rrd visualisation.
+viz = ["rerun-sdk>=0.31"]
+# Everything-bundled for the "I want the full pipeline" install.
+all = [
+    "ultralytics>=8.0",
+    "transformers>=4.40",
+    "accelerate>=0.30",
+    "rerun-sdk>=0.31",
+]
+# Dev tooling: pytest is the project's only test runner.
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage   = "https://github.com/peclem/robotics-perception-pipeline"
+Repository = "https://github.com/peclem/robotics-perception-pipeline"
+Issues     = "https://github.com/peclem/robotics-perception-pipeline/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -14,6 +74,13 @@ markers = [
     "integration: requires real hardware (GPU, camera) — skipped in CI",
 ]
 
+# scripts/ is the application's entry-point folder (calibration, benchmarks,
+# training wrappers) — not library code. Excluded from the wheel so downstream
+# consumers depending on this package don't get the CLI surface.
+# tests/, data/, docs/, ros2_ws/ are likewise application / dev artefacts.
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["tests*", "data*", "docs*"]
+exclude = [
+    "tests*", "data*", "docs*", "scripts*",
+    "ros2_ws*", "third_party*",
+]

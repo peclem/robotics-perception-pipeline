@@ -24,6 +24,8 @@ Thumbs.db
 
 # Build
 *.egg-info/
+dist/
+build/
 
 # Detector training output (ultralytics runs/)
 runs/
