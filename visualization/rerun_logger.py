@@ -28,6 +28,8 @@ metrics/fps                 — pipeline throughput time series
 metrics/n_lost              — lost track count time series
 metrics/health/{stage}/last_ms    — per-stage latency (HealthMonitor)
 metrics/health/{stage}/budget_ms  — per-stage budget (HealthMonitor)
+metrics/vio/{position,velocity,orientation}_uncertainty   — VIO EKF cov
+metrics/vio/{bias_gyro,bias_accel}_uncertainty            — VIO EKF cov
 tracks/{id}/nis             — per-track NIS scalar (show_nis only)
 
 WSL2 → Windows connection
@@ -876,6 +878,7 @@ class RerunLogger:
         fps:       float,
         n_lost:    int,
         health_monitor=None,
+        vio_ekf=None,
     ) -> None:
         """Log pipeline performance as Rerun scalar time series."""
         if not self._ready or self._rr is None:
@@ -897,6 +900,58 @@ class RerunLogger:
 
         if health_monitor is not None:
             self._log_health(rr, health_monitor)
+
+        if vio_ekf is not None:
+            self._log_vio(rr, vio_ekf)
+
+    def _log_vio(self, rr, vio_ekf) -> None:
+        """
+        Covariance-derived VIO health scalars under metrics/vio/*.
+
+        For each 3×3 diagonal block of the 15-D error-state covariance
+        we emit a single uncertainty scalar = sqrt(trace(block)). That
+        is the standard "filter uncertainty" diagnostic: position
+        uncertainty in metres, velocity in m/s, orientation in rad,
+        gyro / accel bias in their native units. As the EKF
+        consumes visual + IMU measurements all five should shrink
+        toward steady-state values.
+
+        Indexing is hardcoded to the [δp, δv, δθ, δb_g, δb_a] layout of
+        VisualInertialEKF. If that order ever changes, this method
+        needs to follow — but the layout is exported as
+        state_estimation.visual_inertial_ekf.P_IDX etc., so the layout
+        contract is explicit on the math side.
+        """
+        try:
+            P = np.asarray(vio_ekf.covariance, dtype=np.float64)
+            if P.shape != (15, 15):
+                return
+        except Exception as e:
+            log.debug("VIO covariance access failed: %s", e)
+            return
+
+        def _trace_sqrt(P, s):
+            return float(np.sqrt(np.trace(P[s, s])))
+
+        # Slice constants — duplicated from VisualInertialEKF.
+        P_SLC  = slice(0,  3)
+        V_SLC  = slice(3,  6)
+        T_SLC  = slice(6,  9)
+        BG_SLC = slice(9, 12)
+        BA_SLC = slice(12, 15)
+
+        scalars = {
+            "metrics/vio/position_uncertainty_m":    _trace_sqrt(P, P_SLC),
+            "metrics/vio/velocity_uncertainty_mps":  _trace_sqrt(P, V_SLC),
+            "metrics/vio/orientation_uncertainty_rad": _trace_sqrt(P, T_SLC),
+            "metrics/vio/bias_gyro_uncertainty":     _trace_sqrt(P, BG_SLC),
+            "metrics/vio/bias_accel_uncertainty":    _trace_sqrt(P, BA_SLC),
+        }
+        for path, value in scalars.items():
+            try:
+                rr.log(path, rr.Scalars(float(value)))
+            except Exception as e:
+                log.debug("VIO scalar log failed %s: %s", path, e)
 
     def _log_health(self, rr, health_monitor) -> None:
         """

@@ -213,6 +213,7 @@ class DebugVisualizer:
         occupancy_grid_2d=None,
         depth_map=None,
         health_monitor=None,
+        vio_ekf=None,
     ) -> None:
         self._rlog.log_frame(
             frame, detections, tracks,
@@ -225,6 +226,7 @@ class DebugVisualizer:
         self._rlog.log_metrics(
             detect_ms, track_ms, fps, n_lost,
             health_monitor=health_monitor,
+            vio_ekf=vio_ekf,
         )
 
     def close(self) -> None:

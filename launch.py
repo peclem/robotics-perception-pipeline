@@ -658,6 +658,7 @@ class Pipeline:
                     None,
                 ),
                 health_monitor=self._health,
+                vio_ekf=getattr(self._pose_estimator, "ekf", None),
             )
 
             t_total = time.monotonic() - t_frame_start

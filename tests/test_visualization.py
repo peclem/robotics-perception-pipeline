@@ -895,6 +895,86 @@ class TestRerunTrackHistory:
 
 
 # ---------------------------------------------------------------------------
+# TestRerunVIOScalars — covariance-derived VIO health scalars
+# ---------------------------------------------------------------------------
+
+class TestRerunVIOScalars:
+
+    class _FakeEKF:
+        """Stand-in for VisualInertialEKF — only `.covariance` is read."""
+        def __init__(self, P): self.covariance = P
+
+    def _ready_logger(self, cfg) -> RerunLogger:
+        logger = RerunLogger(cfg)
+        logger._rr = _FakeRR()      # type: ignore[attr-defined]
+        logger._ready = True        # type: ignore[attr-defined]
+        return logger
+
+    def _by_path(self, fake, path):
+        return [c for c in fake.calls if c["path"] == path]
+
+    def _diag_cov(self, p_std=1.0, v_std=0.5, t_std=0.1,
+                   bg_std=0.01, ba_std=0.05):
+        """Build a 15×15 diagonal covariance from per-block stds."""
+        P = np.zeros((15, 15), dtype=np.float64)
+        P[0:3, 0:3]   = np.eye(3) * p_std  ** 2
+        P[3:6, 3:6]   = np.eye(3) * v_std  ** 2
+        P[6:9, 6:9]   = np.eye(3) * t_std  ** 2
+        P[9:12,9:12]  = np.eye(3) * bg_std ** 2
+        P[12:15,12:15]= np.eye(3) * ba_std ** 2
+        return P
+
+    def test_five_scalars_emitted_from_covariance(self, cfg):
+        logger = self._ready_logger(cfg)
+        ekf = self._FakeEKF(self._diag_cov())
+        logger.log_metrics(0.0, 0.0, 0.0, 0, vio_ekf=ekf)
+        for path in (
+            "metrics/vio/position_uncertainty_m",
+            "metrics/vio/velocity_uncertainty_mps",
+            "metrics/vio/orientation_uncertainty_rad",
+            "metrics/vio/bias_gyro_uncertainty",
+            "metrics/vio/bias_accel_uncertainty",
+        ):
+            calls = self._by_path(logger._rr, path)
+            assert calls, f"expected scalar at {path}"
+            assert calls[-1]["primitive"]["type"] == "Scalars"
+
+    def test_scalars_match_trace_sqrt(self, cfg):
+        # Direct numerical check: for a diagonal cov with std=σ on three
+        # diagonal entries, sqrt(trace) = σ * sqrt(3).
+        # _FakeRR's Scalars() returns just {"type": "Scalars"} (no value
+        # captured), so we instead intercept the log call's value by
+        # patching the constructor on this test.
+        captured: dict = {}
+        logger = self._ready_logger(cfg)
+        real_scalars = logger._rr.Scalars
+        def _capture(v):
+            captured.setdefault("vals", []).append(float(v))
+            return real_scalars(v)
+        logger._rr.Scalars = _capture     # type: ignore[assignment]
+        ekf = self._FakeEKF(self._diag_cov(p_std=2.0))
+        logger._log_vio(logger._rr, ekf)
+        # Position uncertainty: sqrt(3 * 2.0**2) = 2.0 * sqrt(3) ≈ 3.464
+        # It's the first scalar emitted by _log_vio.
+        assert abs(captured["vals"][0] - 2.0 * np.sqrt(3)) < 1e-9
+
+    def test_no_vio_ekf_means_no_call(self, cfg):
+        logger = self._ready_logger(cfg)
+        logger.log_metrics(0.0, 0.0, 0.0, 0)
+        vio_calls = [c for c in logger._rr.calls
+                     if c["path"].startswith("metrics/vio/")]
+        assert not vio_calls
+
+    def test_wrong_cov_shape_skipped(self, cfg):
+        logger = self._ready_logger(cfg)
+        bad = self._FakeEKF(np.eye(8, dtype=np.float64))   # 8×8 KF, not VIO
+        logger.log_metrics(0.0, 0.0, 0.0, 0, vio_ekf=bad)
+        vio_calls = [c for c in logger._rr.calls
+                     if c["path"].startswith("metrics/vio/")]
+        assert not vio_calls
+
+
+# ---------------------------------------------------------------------------
 # TestRerunRightImage — stereo right-eye image at world/camera/right
 # ---------------------------------------------------------------------------
 
