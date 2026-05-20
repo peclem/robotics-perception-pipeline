@@ -62,6 +62,7 @@ from perception.camera_interface import CameraFrame
 from perception.config_loader import PipelineConfig
 from perception.detector import Detection
 from tracking.track import Track
+from world_model.semantic_map import class_colour
 
 log = logging.getLogger(__name__)
 
@@ -246,6 +247,7 @@ class RerunLogger:
         occupancy_grid_2d=None,
         drivable_costmap=None,
         depth_map=None,
+        semantic_map=None,
     ) -> None:
         """
         Log all visual data for one frame.
@@ -287,6 +289,8 @@ class RerunLogger:
             # pipeline feature is disabled (callers pass None).
             if occupancy_3d is not None:
                 self._log_voxels(rr, occupancy_3d)
+            if semantic_map is not None:
+                self._log_semantic_map(rr, semantic_map)
             if rooms is not None:
                 self._log_rooms(rr, rooms)
             if semantic_mask is not None:
@@ -536,6 +540,46 @@ class RerunLogger:
             )
         except Exception as e:
             log.debug("Voxel log failed: %s", e)
+
+    def _log_semantic_map(self, rr, semantic_map) -> None:
+        """
+        Log the persistent metric-semantic voxel map as a 3D point
+        cloud at `world/semantic_map` — one point per occupied voxel,
+        coloured by its fused (MAP) class via `class_colour`.
+
+        This is the visible payoff of the semantic SLAM mapping layer:
+        the longer the run, the more of the scene fills in, in stable
+        per-class colours. Kept on a distinct entity path from
+        `world/occupancy_3d` (the per-frame obstacle voxels) so the two
+        can be toggled independently in the viewer.
+        """
+        try:
+            centres = semantic_map.voxel_centres_world()
+        except Exception as e:
+            log.debug("SemanticMap voxel query failed: %s", e)
+            return
+        if centres.shape[0] == 0:
+            try:
+                rr.log("world/semantic_map", rr.Clear(recursive=False))
+            except Exception:
+                pass
+            return
+        try:
+            labels = semantic_map.voxel_labels()
+            colours = np.array(
+                [class_colour(int(c)) for c in labels], dtype=np.uint8,
+            )
+            res = float(semantic_map.params.voxel_size_m)
+            rr.log(
+                "world/semantic_map",
+                rr.Points3D(
+                    positions=centres.astype(np.float32),
+                    radii=res * 0.5,
+                    colors=colours,
+                ),
+            )
+        except Exception as e:
+            log.debug("SemanticMap log failed: %s", e)
 
     def _log_rooms(self, rr, rooms) -> None:
         """

@@ -130,6 +130,13 @@ def generate_launch_description():
         ),
         Node(
             package="robotics_perception_ros2",
+            executable="semantic_map_node",
+            name="semantic_map",
+            output="screen",
+            parameters=common_params,
+        ),
+        Node(
+            package="robotics_perception_ros2",
             executable="health_monitor_node",
             name="health_monitor",
             output="screen",

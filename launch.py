@@ -704,6 +704,7 @@ class Pipeline:
                      if e.depth_map is not None),
                     None,
                 ),
+                semantic_map=self._semantic_map,
                 health_monitor=self._health,
                 vio_ekf=getattr(self._pose_estimator, "ekf", None),
             )

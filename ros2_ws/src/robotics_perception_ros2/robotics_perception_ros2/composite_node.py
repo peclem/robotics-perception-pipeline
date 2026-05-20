@@ -49,6 +49,7 @@ from robotics_perception_ros2.occupancy_grid_node  import OccupancyGridNode
 from robotics_perception_ros2.occupancy_3d_node    import Occupancy3DNode
 from robotics_perception_ros2.drivable_mask_node    import DrivableMaskNode
 from robotics_perception_ros2.drivable_costmap_node import DrivableCostmapNode
+from robotics_perception_ros2.semantic_map_node     import SemanticMapNode
 from robotics_perception_ros2.health_monitor_node   import HealthMonitorNode
 
 
@@ -70,6 +71,7 @@ def main() -> None:
         Occupancy3DNode(enable_intra_process=True),
         DrivableMaskNode(enable_intra_process=True),
         DrivableCostmapNode(enable_intra_process=True),
+        SemanticMapNode(enable_intra_process=True),
         HealthMonitorNode(enable_intra_process=True),
     ]
 

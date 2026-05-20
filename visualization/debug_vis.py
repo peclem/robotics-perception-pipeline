@@ -213,6 +213,7 @@ class DebugVisualizer:
         occupancy_grid_2d=None,
         drivable_costmap=None,
         depth_map=None,
+        semantic_map=None,
         health_monitor=None,
         vio_ekf=None,
     ) -> None:
@@ -224,6 +225,7 @@ class DebugVisualizer:
             occupancy_grid_2d=occupancy_grid_2d,
             drivable_costmap=drivable_costmap,
             depth_map=depth_map,
+            semantic_map=semantic_map,
         )
         self._rlog.log_metrics(
             detect_ms, track_ms, fps, n_lost,

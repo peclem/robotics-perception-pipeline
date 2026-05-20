@@ -85,6 +85,7 @@ Hornung et al.  — OctoMap: An Efficient Probabilistic 3D Mapping Framework.
 
 from __future__ import annotations
 
+import colorsys
 import logging
 import math
 from dataclasses import dataclass, field
@@ -100,6 +101,28 @@ log = logging.getLogger(__name__)
 
 
 VoxelKey = Tuple[int, int, int]
+
+
+# ---------------------------------------------------------------------------
+# Visualisation helper
+# ---------------------------------------------------------------------------
+
+def class_colour(class_id: int) -> Tuple[int, int, int]:
+    """
+    Deterministic RGB colour (0-255) for a semantic class id.
+
+    A pure id→colour function so the Rerun voxel cloud and the ROS2
+    PointCloud2 publisher render the same class in the same colour
+    without sharing a dataset-specific palette. Hue is spread around
+    the wheel by a step coprime-ish with 360; saturation/value are
+    fixed so every class is vivid and distinguishable.
+
+    Lives here (rather than in `visualization/`) because the ROS2 node
+    must reach it without importing the Rerun-heavy viz package.
+    """
+    hue = ((int(class_id) * 47) % 360) / 360.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.70, 0.95)
+    return (int(r * 255), int(g * 255), int(b * 255))
 
 
 # ---------------------------------------------------------------------------

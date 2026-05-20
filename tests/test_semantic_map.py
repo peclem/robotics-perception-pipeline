@@ -23,7 +23,7 @@ from perception.camera_interface import CameraIntrinsics
 from perception.pose_estimator import CameraPose
 from perception.semantic_segmenter import SemanticMask
 from world_model.semantic_map import (
-    SemanticMap, SemanticMapParams, SemanticVoxel,
+    SemanticMap, SemanticMapParams, SemanticVoxel, class_colour,
 )
 
 
@@ -366,3 +366,26 @@ class TestSemanticVoxel:
 
     def test_empty_voxel_confidence_zero(self):
         assert SemanticVoxel().confidence == 0.0
+
+
+# ---------------------------------------------------------------------------
+# class_colour viz helper
+# ---------------------------------------------------------------------------
+
+class TestClassColour:
+
+    def test_returns_rgb_triple_in_range(self):
+        for cid in range(0, 40):
+            c = class_colour(cid)
+            assert len(c) == 3
+            assert all(isinstance(v, int) for v in c)
+            assert all(0 <= v <= 255 for v in c)
+
+    def test_deterministic(self):
+        assert class_colour(7) == class_colour(7)
+
+    def test_distinct_ids_mostly_distinct_colours(self):
+        # The id→hue map need not be a perfect injection, but a small
+        # vocabulary should land on a healthy spread of colours.
+        colours = {class_colour(cid) for cid in range(19)}
+        assert len(colours) >= 15
