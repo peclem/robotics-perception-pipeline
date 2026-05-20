@@ -29,6 +29,7 @@ from perception.camera_interface import (
     VideoFileCamera,
     WebcamCamera,
 )
+from perception.tum_dataset_camera import TUMDatasetCamera
 from perception.config_loader import load_config, PipelineConfig
 from perception.detector import YOLOv8Detector
 from tracking.tracker import ByteTracker
@@ -436,10 +437,18 @@ class Pipeline:
                 num_objects=cfg.synthetic_camera.num_objects,
                 seed=cfg.synthetic_camera.seed,
             )
+        elif self._source == "tum":
+            return TUMDatasetCamera(
+                raw,
+                sequence_dir=self._input_path or cfg.tum_dataset.sequence_dir,
+                depth_factor=cfg.tum_dataset.depth_factor,
+                max_frames=cfg.tum_dataset.max_frames,
+                assoc_max_diff=cfg.tum_dataset.assoc_max_diff,
+            )
         else:
             raise ValueError(
                 f"Unknown source: {self._source!r}. "
-                "Use: webcam / video / synthetic"
+                "Use: webcam / video / synthetic / tum"
             )
 
     def _open_writer(self, frame: CameraFrame) -> Optional[cv2.VideoWriter]:
@@ -825,7 +834,7 @@ Examples:
     )
     parser.add_argument(
         "--source",
-        choices=["webcam", "video", "synthetic"],
+        choices=["webcam", "video", "synthetic", "tum"],
         default="synthetic",
         help="Camera source (default: synthetic)",
     )
@@ -833,7 +842,8 @@ Examples:
         "--input",
         type=str,
         default=None,
-        help="Input video path (required when --source video)",
+        help="Input path: video file (--source video) or TUM "
+             "sequence directory (--source tum); falls back to config",
     )
     parser.add_argument(
         "--config",

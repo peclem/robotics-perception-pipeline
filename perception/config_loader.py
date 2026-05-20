@@ -121,6 +121,18 @@ class SyntheticCameraConfig:
 
 
 @dataclass
+class TUMDatasetConfig:
+    """Replay a TUM RGB-D sequence directory (--source tum)."""
+    sequence_dir:   str           = "data/rgbd_dataset_freiburg1_room"
+    depth_factor:   float         = 5000.0
+    max_frames:     Optional[int] = None
+    assoc_max_diff: float         = 0.02
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class DetectorConfig:
     model:                str                 = "yolov8n.pt"
     confidence_threshold: float               = 0.25
@@ -749,6 +761,7 @@ class PipelineConfig:
     camera:                 CameraConfig               = field(default_factory=CameraConfig)
     video:                  VideoConfig                = field(default_factory=VideoConfig)
     synthetic_camera:       SyntheticCameraConfig      = field(default_factory=SyntheticCameraConfig)
+    tum_dataset:            TUMDatasetConfig           = field(default_factory=TUMDatasetConfig)
     detector:               DetectorConfig             = field(default_factory=DetectorConfig)
     tracker:                TrackerConfig              = field(default_factory=TrackerConfig)
     kalman_filter:          KalmanFilterConfig         = field(default_factory=KalmanFilterConfig)
@@ -783,6 +796,7 @@ class PipelineConfig:
             "camera":                 self.camera.as_dict(),
             "video":                  self.video.as_dict(),
             "synthetic_camera":       self.synthetic_camera.as_dict(),
+            "tum_dataset":            self.tum_dataset.as_dict(),
             "detector":               self.detector.as_dict(),
             "tracker":                self.tracker.as_dict(),
             "kalman_filter":          self.kalman_filter.as_dict(),
@@ -1219,6 +1233,13 @@ def _validate(raw: dict) -> None:
             f"semantic_map.min_range_m ({sm_min})."
         )
 
+    # TUM RGB-D dataset replay
+    tum_raw = raw.get("tum_dataset", {})
+    _require_positive_float(errors, tum_raw, "tum_dataset.depth_factor")
+    _require_positive_float(errors, tum_raw, "tum_dataset.assoc_max_diff")
+    if tum_raw.get("max_frames") is not None:
+        _require_positive_int(errors, tum_raw, "tum_dataset.max_frames")
+
     # Visualization
     vis = raw.get("visualization", {})
     vas = vis.get("velocity_arrow_scale", 0.5)
@@ -1241,6 +1262,7 @@ def _build(raw: dict) -> PipelineConfig:
     c   = raw.get("camera", {})
     v   = raw.get("video", {})
     s   = raw.get("synthetic_camera", {})
+    tum = raw.get("tum_dataset", {})
     d   = raw.get("detector", {})
     t   = raw.get("tracker", {})
     kf  = raw.get("kalman_filter", {})
@@ -1310,6 +1332,13 @@ def _build(raw: dict) -> PipelineConfig:
             fps=         float(s.get("fps", 30.0)),
             num_objects= int(s.get("num_objects", 3)),
             seed=        int(s.get("seed", 42)),
+        ),
+        tum_dataset=TUMDatasetConfig(
+            sequence_dir=   str(tum.get("sequence_dir",
+                                        "data/rgbd_dataset_freiburg1_room")),
+            depth_factor=   float(tum.get("depth_factor", 5000.0)),
+            max_frames=     int(tum["max_frames"]) if tum.get("max_frames") else None,
+            assoc_max_diff= float(tum.get("assoc_max_diff", 0.02)),
         ),
         detector=DetectorConfig(
             model=                str(d.get("model", "yolov8n.pt")),
