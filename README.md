@@ -49,7 +49,8 @@ marked. Unimplemented components and their integration points are identified.
     ║  [✓] EKF — constant turn rate 9D state + ω, analytical Jac.    ║
     ║  [✓] Camera motion comp.      LK optical flow + affine RANSAC   ║
     ║  [✓] Monocular depth          Depth Anything V2, metric         ║
-    ║  [✓] Monocular ego-pose       DPVO (deep patch VO), 15 Hz       ║
+    ║  [✓] Monocular ego-pose       DPVO (deep patch VO) / DPV-SLAM   ║
+    ║                               (DPVO + loop closure), 15 Hz      ║
     ║  [✓] ReID embeddings          DINOv2 (foundation, class-       ║
     ║                                agnostic). IoU + cosine cost,    ║
     ║                                StrongSORT-style blend.          ║
@@ -91,7 +92,10 @@ marked. Unimplemented components and their integration points are identified.
     ║                               scale; anchor against Depth        ║
     ║                               Anything V2 (deferred to Phase 1   ║
     ║                               validation work)                   ║
-    ║  [ ] SLAM / loop closure      DPV-SLAM extension for drift       ║
+    ║  [✓] SLAM / loop closure      DPV-SLAM — DPVO + proximity +     ║
+    ║                               DBoW2 loop closure. Drift-         ║
+    ║                               corrected on revisit. Drop-in via  ║
+    ║                               pose_estimator.type='dpv_slam'.    ║
     ║                                                                  ║
     ║  ObjectState.position_world (X, Y, Z) metres in the map frame   ║
     ║  is populated when ego-pose is available. SceneGraph.update()    ║
@@ -231,10 +235,14 @@ marked. Unimplemented components and their integration points are identified.
             embedding ← EMA(0.9 * old, 0.1 * new)
         │
         ▼
-    Visual ego-pose: DPVOPoseEstimator (pose_estimator.type='dpvo')
+    Visual ego-pose: DPVOPoseEstimator   (pose_estimator.type='dpvo')
+                  or DPVSLAMPoseEstimator (pose_estimator.type='dpv_slam')
         Lazy DPVO init on first frame; stride-based rate decoupling
         (default stride=2 → 15 Hz pose at 30 Hz camera). Returns
-        CameraPose(R, t) in world ← camera convention.
+        CameraPose(R, t) in world ← camera convention. With 'dpv_slam',
+        loop closure drift-corrects the trajectory on revisit — the
+        corrected pose can jump at a loop event (absorbed by the
+        map ← odom transform edge).
         │
         ▼ (when vio.enabled)
     VIOPoseEstimator (wraps visual + IMU)
@@ -806,9 +814,14 @@ below — the YAML itself is the canonical reference.
         raft_iters: 12
 
     pose_estimator:
-        type: "null"        # 'null' | 'dpvo'
+        type: "null"        # 'null' | 'dpvo' | 'dpv_slam'
         stride: 2           # DPVO every Nth frame → pose at 30/stride Hz
         patches_per_frame: 96
+        # dpv_slam-only — DPVO + loop closure (drift-corrected on revisit)
+        loop_closure: true          # proximity loop closure (no extra deps)
+        backend_thresh: 64.0
+        global_opt_freq: 15         # global optimisation every N keyframes
+        classic_loop_closure: false # DBoW2 long-term LC (needs DBoW2 build)
 
     imu:
         type: "null"        # 'null' | 'synthetic'  (HW backends slot in here)
@@ -1045,6 +1058,19 @@ the same contract: flat-ground IPM (no depth dep) and depth-aware
 back-projection (handles stairs / slopes). Both pipelines (standalone
 Rerun + ROS2 graph) emit the costmap.
 
+**SLAM — loop closure (DPV-SLAM).** `DPVSLAMPoseEstimator`
+(`perception/dpv_slam_pose_estimator.py`) is DPVO + loop closure:
+proximity-based pose-graph loop edges (always on, no extra deps) plus
+optional DBoW2 long-term place recognition. Drift is corrected on
+revisit instead of accumulating monotonically. Drop-in via
+`pose_estimator.type: dpv_slam` — a thin subclass of
+`DPVOPoseEstimator` that flips the `LOOP_CLOSURE` /
+`CLASSIC_LOOP_CLOSURE` config flags; the whole downstream stack
+(TransformTree, SceneGraph, ROS2 pose_node) consumes the loop-corrected
+pose unchanged. The loop-closure jump is absorbed by the
+`map ← odom` transform edge. NOT addressed: monocular scale (still
+needs the Depth-Anything anchor) and dense bundle adjustment refinement.
+
 ### Deferred
 
 **Metric scale anchoring for DPVO.** Monocular VO has unobservable
@@ -1054,10 +1080,6 @@ calibration is feasible: at init (or via a continuous low-pass
 filter), compute the scale ratio between DPVO's reported depth and
 the median metric depth. Deferred until Phase 1 validation work
 (TUM RGB-D) provides ground truth to measure against.
-
-**Loop closure (DPV-SLAM).** DPVO drifts over long runs. Princeton's
-DPV-SLAM extension adds long-term loop closure on top of DPVO with
-the same wrapper API. Drop-in upgrade when drift becomes a concern.
 
 **Tightly-coupled VIO backbone.** The shipped fuser is loosely-coupled
 (consumes the visual estimator's 6-DOF pose as a measurement). The

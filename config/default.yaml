@@ -126,11 +126,23 @@ coordinate_frames:
   #     t: [0.0, 0.0, 0.10]
   static_extrinsics: []
 pose_estimator:
-  type: "null"   # 'null' | 'dpvo' (implemented) | 'orbslam' (planned)
-  # DPVO-specific (only consulted when type == 'dpvo')
+  # 'null' | 'dpvo' | 'dpv_slam' (implemented) | 'orbslam' (planned).
+  # dpvo      = Deep Patch Visual Odometry — drifts over long runs.
+  # dpv_slam  = DPVO + loop closure — drift-corrected on revisit.
+  type: "null"
+  # DPVO-specific (consulted for both 'dpvo' and 'dpv_slam')
   checkpoint: null          # null → third_party/DPVO/models/dpvo.pth
   stride: 2                 # run DPVO every Nth frame → pose at 30/stride Hz
   patches_per_frame: 96     # DPVO accuracy/speed knob (lower = faster, less accurate)
+  # DPV-SLAM loop-closure knobs (only consulted when type == 'dpv_slam')
+  loop_closure: true        # proximity loop closure — no extra deps
+  backend_thresh: 64.0      # loop-edge distance threshold
+  max_edge_age: 1000        # drop loop edges older than this many keyframes
+  global_opt_freq: 15       # run global optimisation every N keyframes
+  classic_loop_closure: false  # DBoW2 long-term LC; needs the DBoW2 build —
+                               # DPVO falls back to proximity-only if absent
+  loop_close_window: 3      # DBoW2 retrieval window size
+  loop_retr_thresh: 0.04    # DBoW2 retrieval score threshold
 appearance:
   type: "null"              # 'null' | 'dinov2'
   model: "facebook/dinov2-small"  # ~600 MB VRAM, 384-dim

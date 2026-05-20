@@ -127,6 +127,9 @@ class DPVOPoseEstimator(PoseEstimator):
         self._counter: int = 0
         self._fed: int = 0
         self._latest: Optional[CameraPose] = None
+        # CameraPose.source tag. Subclasses (DPV-SLAM) override this so
+        # downstream diagnostics can tell odometry from loop-closed SLAM.
+        self._source: str = "dpvo"
 
         log.info(
             "DPVOPoseEstimator: stride=%d patches=%d checkpoint=%s",
@@ -178,7 +181,7 @@ class DPVOPoseEstimator(PoseEstimator):
                         timestamp=frame.timestamp,
                         frame_idx=frame.frame_idx,
                         confidence=1.0,
-                        source="dpvo",
+                        source=self._source,
                     )
                 except Exception as exc:
                     log.warning(
@@ -206,7 +209,7 @@ class DPVOPoseEstimator(PoseEstimator):
 
     def __repr__(self) -> str:
         return (
-            f"DPVOPoseEstimator(stride={self._stride}, "
+            f"{type(self).__name__}(stride={self._stride}, "
             f"patches={self._cfg.PATCHES_PER_FRAME}, "
             f"init={self.is_initialised}, fed={self._fed})"
         )

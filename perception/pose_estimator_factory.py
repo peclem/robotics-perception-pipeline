@@ -71,9 +71,15 @@ def build_visual_pose_estimator(cfg, raw: dict) -> PoseEstimator:
         est = DPVOPoseEstimator(raw)
         log.info("Visual PoseEstimator: %r", est)
         return est
+    if pe_type == "dpv_slam":
+        # DPV-SLAM = DPVO + loop closure. Same heavy dep, lazy-imported.
+        from perception.dpv_slam_pose_estimator import DPVSLAMPoseEstimator
+        est = DPVSLAMPoseEstimator(raw)
+        log.info("Visual PoseEstimator: %r", est)
+        return est
     raise ValueError(
         f"Unknown pose_estimator.type={pe_type!r}. "
-        "Supported: 'null', 'dpvo'."
+        "Supported: 'null', 'dpvo', 'dpv_slam'."
     )
 
 

@@ -605,9 +605,10 @@ class PoseEstimatorConfig:
     Selects which PoseEstimator backend to instantiate.
 
     type
-        'null'    — NullPoseEstimator (default; camera-frame-only mode)
-        'orbslam' — ORB-SLAM3 (planned)
-        'dpvo'    — Deep Patch Visual Odometry (implemented)
+        'null'     — NullPoseEstimator (default; camera-frame-only mode)
+        'orbslam'  — ORB-SLAM3 (planned)
+        'dpvo'     — Deep Patch Visual Odometry (implemented)
+        'dpv_slam' — DPV-SLAM = DPVO + loop closure (implemented)
 
     DPVO-specific
     -------------
@@ -616,11 +617,31 @@ class PoseEstimatorConfig:
                         stride=2 → pose at 15 Hz, leaves comfortable
                         budget on this hardware (see benchmark).
     patches_per_frame : DPVO's accuracy/speed knob (default 96)
+
+    DPV-SLAM-specific (type='dpv_slam' only)
+    ----------------------------------------
+    loop_closure         : proximity loop closure on/off (default True)
+    backend_thresh       : loop-edge distance threshold (default 64.0)
+    max_edge_age         : drop loop edges older than this (default 1000)
+    global_opt_freq      : global optimisation every N keyframes (def 15)
+    classic_loop_closure : DBoW2 long-term loop closure (default False —
+                           needs the DBoW2 build; DPVO falls back to
+                           proximity-only if unavailable)
+    loop_close_window    : DBoW2 retrieval window (default 3)
+    loop_retr_thresh     : DBoW2 retrieval score threshold (default 0.04)
     """
     type:              str           = "null"
     checkpoint:        Optional[str] = None
     stride:            int           = 2
     patches_per_frame: int           = 96
+    # DPV-SLAM loop-closure knobs (ignored unless type='dpv_slam').
+    loop_closure:         bool  = True
+    backend_thresh:       float = 64.0
+    max_edge_age:         int   = 1000
+    global_opt_freq:      int   = 15
+    classic_loop_closure: bool  = False
+    loop_close_window:    int   = 3
+    loop_retr_thresh:     float = 0.04
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -1004,10 +1025,11 @@ def _validate(raw: dict) -> None:
     # Pose estimator
     pe_raw = raw.get("pose_estimator", {})
     pe_type = pe_raw.get("type", "null")
-    if pe_type not in ("null", "orbslam", "dpvo"):
+    if pe_type not in ("null", "orbslam", "dpvo", "dpv_slam"):
         errors.append(
             f"pose_estimator.type={pe_type!r} is invalid. "
-            "Supported: 'null', 'dpvo' (implemented), 'orbslam' (planned)."
+            "Supported: 'null', 'dpvo', 'dpv_slam' (implemented), "
+            "'orbslam' (planned)."
         )
 
     # Depth estimator
@@ -1343,10 +1365,17 @@ def _build(raw: dict) -> PipelineConfig:
             static_extrinsics= static_extrinsics,
         ),
         pose_estimator=PoseEstimatorConfig(
-            type=              str(pe.get("type", "null")),
-            checkpoint=        pe.get("checkpoint"),
-            stride=            int(pe.get("stride", 2)),
-            patches_per_frame= int(pe.get("patches_per_frame", 96)),
+            type=                 str(pe.get("type", "null")),
+            checkpoint=           pe.get("checkpoint"),
+            stride=               int(pe.get("stride", 2)),
+            patches_per_frame=    int(pe.get("patches_per_frame", 96)),
+            loop_closure=         bool(pe.get("loop_closure", True)),
+            backend_thresh=       float(pe.get("backend_thresh", 64.0)),
+            max_edge_age=         int(pe.get("max_edge_age", 1000)),
+            global_opt_freq=      int(pe.get("global_opt_freq", 15)),
+            classic_loop_closure= bool(pe.get("classic_loop_closure", False)),
+            loop_close_window=    int(pe.get("loop_close_window", 3)),
+            loop_retr_thresh=     float(pe.get("loop_retr_thresh", 0.04)),
         ),
         occupancy_grid=OccupancyGridConfig(
             enabled=               bool(og.get("enabled", False)),
