@@ -298,7 +298,12 @@ class DepthAnythingEstimator(DepthEstimator):
             result = self._pipe(pil_img)
             self._latencies.append((time.monotonic() - t0) * 1000)
 
-            return np.array(result["depth"], dtype=np.float32)
+            # 'predicted_depth' is the metric tensor (metres for the Metric
+            # checkpoints); 'depth' is only a 0-255 colourised preview.
+            depth = result["predicted_depth"]
+            if hasattr(depth, "detach"):
+                depth = depth.detach().cpu().numpy()
+            return np.squeeze(np.asarray(depth, dtype=np.float32))
 
         except Exception as e:
             log.debug("Depth inference error (suppressed): %s", e)
