@@ -209,6 +209,7 @@ health_monitor:
     scene_graph: 5.0
     appearance:  15.0
     semantic:    40.0       # Mask2Former-Swin-T baseline; ignored when null
+    semantic_map: 10.0      # voxel-map integration; ignored when disabled
     frame_total: 40.0
 occupancy_grid:
   enabled: false            # publish nav_msgs/OccupancyGrid from the scene graph
@@ -261,6 +262,23 @@ occupancy_3d:
     motorcycle: 0.80
     bus:        3.00
     truck:      2.50
+semantic_map:
+  # Persistent metric-semantic voxel map — the "full semantic SLAM"
+  # mapping layer. Folds dense depth + Mask2Former labels + the camera
+  # world pose into a voxel-hashed map with recursive Bayesian per-voxel
+  # label fusion. CPU-side, zero extra VRAM. Needs semantic.enabled,
+  # depth.enabled and a non-null pose_estimator; integration is skipped
+  # per-frame whenever one of those inputs is missing.
+  enabled: false
+  voxel_size_m: 0.10          # cubic voxel edge length
+  min_range_m: 0.30           # near clip — drop degenerate depths
+  max_range_m: 8.0            # far clip — mono depth untrustworthy beyond
+  pixel_stride: 4             # integrate every Nth pixel per axis
+  occupancy_hit_logodds: 0.85 # log-odds added per voxel observation
+  occupancy_clamp: 4.0        # symmetric clamp on accumulated log-odds
+  observation_weight: 1.0     # score per class observation (1.0 = voting)
+  max_voxels: 0               # soft cap; 0 = unbounded (evict oldest above)
+  prune_age_s: 0.0            # drop voxels unseen this long; 0 = keep forever
 benchmark:
   dataset_path: data/MOT17
   split: train

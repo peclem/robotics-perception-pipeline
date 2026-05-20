@@ -52,6 +52,7 @@ from world_model.occupancy_3d import (
     Occupancy3DBuilder, Occupancy3DParams,
 )
 from world_model.room_layer import RoomLayer, RoomLayerConfig
+from world_model.semantic_map import SemanticMap, SemanticMapParams
 from perception.health_monitor import HealthMonitor, HealthStatus
 from world_model.world_map import WorldMap
 from perception.pose_estimator import CameraPose
@@ -105,6 +106,7 @@ class Pipeline:
         self._depth_estimator = None
         self._pose_estimator = None
         self._transform_tree: Optional[TransformTree] = None
+        self._semantic_map: Optional[SemanticMap] = None
 
     # ------------------------------------------------------------------
     # Public
@@ -172,6 +174,7 @@ class Pipeline:
         self._occupancy_grid_builder = self._build_occupancy_grid_builder()
         self._occupancy_3d_builder   = self._build_occupancy_3d_builder()
         self._room_layer             = self._build_room_layer()
+        self._semantic_map           = self._build_semantic_map()
         self._drivable_projector_params = self._build_drivable_projector_params()
 
         # Health monitor: per-stage latency budgets + degraded-mode
@@ -237,6 +240,42 @@ class Pipeline:
             erosion_m=rl.erosion_m,
             min_area_m2=rl.min_area_m2,
             polygon_simplify_m=rl.polygon_simplify_m,
+        ))
+
+    def _build_semantic_map(self) -> Optional[SemanticMap]:
+        """
+        Persistent metric-semantic voxel map (semantic SLAM mapping layer).
+        Built when semantic_map.enabled. Integration additionally needs a
+        live semantic segmenter, a dense depth map and a pose estimate;
+        the per-frame loop skips integration whenever one is missing, so
+        this factory only gates on its own flag — but it does warn when
+        the segmenter is Null, since the map would then collect geometry
+        with no labels.
+        """
+        sm = self._cfg.semantic_map
+        if not sm.enabled:
+            return None
+        if isinstance(self._semantic_segmenter, NullSemanticSegmenter):
+            log.warning(
+                "semantic_map.enabled but the semantic segmenter is Null — "
+                "the voxel map would collect geometry with no labels. "
+                "Enable semantic.* to get a useful map."
+            )
+        log.info(
+            "SemanticMap enabled (voxel=%.2f m, range=%.1f-%.1f m, "
+            "stride=%d, max_voxels=%d)",
+            sm.voxel_size_m, sm.min_range_m, sm.max_range_m,
+            sm.pixel_stride, sm.max_voxels,
+        )
+        return SemanticMap(SemanticMapParams(
+            voxel_size_m=sm.voxel_size_m,
+            min_range_m=sm.min_range_m,
+            max_range_m=sm.max_range_m,
+            pixel_stride=sm.pixel_stride,
+            occupancy_hit_logodds=sm.occupancy_hit_logodds,
+            occupancy_clamp=sm.occupancy_clamp,
+            observation_weight=sm.observation_weight,
+            max_voxels=sm.max_voxels,
         ))
 
     def _build_drivable_projector_params(self) -> Optional[DrivableProjectorParams]:
@@ -543,6 +582,37 @@ class Pipeline:
                     semantic_mask=semantic_mask,
                 )
 
+            # Persistent metric-semantic voxel map (semantic SLAM mapping
+            # layer). Folds this frame's dense depth + per-pixel labels +
+            # camera world-pose into the global voxel map. Skipped on any
+            # frame missing labels, a pose, or a dense depth map — the
+            # SemanticMap consumer degrades silently, like the others.
+            if (self._semantic_map is not None
+                    and semantic_mask is not None
+                    and camera_pose is not None):
+                with self._health.stage("semantic_map"):
+                    # Reuse the dense map the depth stage already produced
+                    # (every DepthEstimate carries it); only fall back to
+                    # a second forward pass when there were no detections
+                    # this frame and the list is therefore empty.
+                    dense_depth = next(
+                        (e.depth_map for e in depth_estimates_list
+                         if e.depth_map is not None),
+                        None,
+                    )
+                    if dense_depth is None:
+                        dense_depth = self._depth_estimator.dense_depth_map(
+                            frame,
+                        )
+                    if dense_depth is not None:
+                        self._semantic_map.integrate(
+                            dense_depth, semantic_mask,
+                            camera_pose, frame.intrinsics,
+                        )
+                    prune_age = self._cfg.semantic_map.prune_age_s
+                    if prune_age > 0.0:
+                        self._semantic_map.prune(frame.timestamp, prune_age)
+
             # Spatial-memory layers — fed to Rerun for the showcase.
             # All gated on their own config flags; None when disabled
             # so the visualizer skips the corresponding draw call.
@@ -688,6 +758,13 @@ class Pipeline:
                         t_track * 1000,
                         fps_log,
                     )
+
+            if self._semantic_map is not None and frame_idx % 30 == 0:
+                log.info(
+                    "SemanticMap | %d voxels | %d frames integrated",
+                    len(self._semantic_map),
+                    self._semantic_map.frames_integrated,
+                )
 
             frame_idx += 1
 

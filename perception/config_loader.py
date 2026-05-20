@@ -442,6 +442,7 @@ class HealthMonitorConfig:
         "scene_graph": 5.0,
         "appearance": 15.0,
         "semantic":   40.0,
+        "semantic_map": 10.0,
         "frame_total": 40.0,
     })
 
@@ -673,6 +674,37 @@ class SemanticConfig:
 
 
 @dataclass
+class SemanticMapConfig:
+    """
+    Persistent metric-semantic voxel map (semantic SLAM mapping layer).
+    Mirrors world_model.semantic_map.SemanticMapParams; this is the
+    validated config layer over the same knobs.
+
+    Needs semantic.enabled=true (per-pixel labels), depth.enabled=true
+    (a dense depth map) and a non-null pose_estimator (world pose) — the
+    launch wiring silently skips integration on any frame missing one.
+
+    prune_age_s
+        Drop voxels not re-observed within this many seconds. 0 keeps the
+        map forever (right default for static structure); set positive to
+        bound a long deployment's memory.
+    """
+    enabled:               bool  = False
+    voxel_size_m:          float = 0.10
+    min_range_m:           float = 0.30
+    max_range_m:           float = 8.00
+    pixel_stride:          int   = 4
+    occupancy_hit_logodds: float = 0.85
+    occupancy_clamp:       float = 4.00
+    observation_weight:    float = 1.00
+    max_voxels:            int   = 0
+    prune_age_s:           float = 0.0
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class VIOConfig:
     """
     Visual-inertial error-state EKF tuning. Mirrors
@@ -737,6 +769,7 @@ class PipelineConfig:
     imu:                    IMUConfig                  = field(default_factory=IMUConfig)
     vio:                    VIOConfig                  = field(default_factory=VIOConfig)
     semantic:               SemanticConfig             = field(default_factory=SemanticConfig)
+    semantic_map:           SemanticMapConfig          = field(default_factory=SemanticMapConfig)
     def as_dict(self) -> dict:
         """
         Full nested dict — structure matches the YAML exactly.
@@ -769,6 +802,7 @@ class PipelineConfig:
             "imu":                    self.imu.as_dict(),
             "vio":                    self.vio.as_dict(),
             "semantic":               self.semantic.as_dict(),
+            "semantic_map":           self.semantic_map.as_dict(),
         }
 
     def section_dict(self, section: str) -> dict:
@@ -1168,6 +1202,23 @@ def _validate(raw: dict) -> None:
     _require_positive_float(errors, rl_raw, "room_layer.min_area_m2")
     _require_positive_float(errors, rl_raw, "room_layer.polygon_simplify_m")
 
+    # Semantic map (metric-semantic voxel SLAM layer)
+    sm_raw = raw.get("semantic_map", {})
+    _require_positive_float(errors, sm_raw, "semantic_map.voxel_size_m")
+    _require_positive_float(errors, sm_raw, "semantic_map.min_range_m")
+    _require_positive_float(errors, sm_raw, "semantic_map.max_range_m")
+    _require_positive_float(errors, sm_raw, "semantic_map.occupancy_hit_logodds")
+    _require_positive_float(errors, sm_raw, "semantic_map.occupancy_clamp")
+    _require_positive_int(errors, sm_raw, "semantic_map.pixel_stride")
+    sm_min = sm_raw.get("min_range_m", 0.30)
+    sm_max = sm_raw.get("max_range_m", 8.00)
+    if (isinstance(sm_min, (int, float)) and isinstance(sm_max, (int, float))
+            and sm_max <= sm_min):
+        errors.append(
+            f"semantic_map.max_range_m ({sm_max}) must exceed "
+            f"semantic_map.min_range_m ({sm_min})."
+        )
+
     # Visualization
     vis = raw.get("visualization", {})
     vas = vis.get("velocity_arrow_scale", 0.5)
@@ -1216,6 +1267,7 @@ def _build(raw: dict) -> PipelineConfig:
     imu = raw.get("imu", {})
     vio = raw.get("vio", {})
     sem = raw.get("semantic", {})
+    smap_sem = raw.get("semantic_map", {})
 
     static_ext_raw = cf.get("static_extrinsics", []) or []
     static_extrinsics = [
@@ -1481,5 +1533,19 @@ def _build(raw: dict) -> PipelineConfig:
                                  "facebook/mask2former-swin-tiny-cityscapes-semantic")),
             device=  str(sem.get("device",  "cuda")),
             dataset= str(sem.get("dataset", "cityscapes")),
+        ),
+        semantic_map=SemanticMapConfig(
+            enabled=               bool(smap_sem.get("enabled", False)),
+            voxel_size_m=          float(smap_sem.get("voxel_size_m", 0.10)),
+            min_range_m=           float(smap_sem.get("min_range_m", 0.30)),
+            max_range_m=           float(smap_sem.get("max_range_m", 8.00)),
+            pixel_stride=          int(smap_sem.get("pixel_stride", 4)),
+            occupancy_hit_logodds= float(smap_sem.get("occupancy_hit_logodds",
+                                                      0.85)),
+            occupancy_clamp=       float(smap_sem.get("occupancy_clamp", 4.00)),
+            observation_weight=    float(smap_sem.get("observation_weight",
+                                                      1.00)),
+            max_voxels=            int(smap_sem.get("max_voxels", 0)),
+            prune_age_s=           float(smap_sem.get("prune_age_s", 0.0)),
         ),
     )
