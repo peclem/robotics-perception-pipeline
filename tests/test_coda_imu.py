@@ -151,6 +151,22 @@ class TestWindow:
         assert CODaIMU(imu_seq).get_samples_since(0.0) == []
 
 
+class TestInitialSamples:
+    def test_window_by_duration(self, imu):
+        # IMU at 0.05 s spacing; 0.22 s window -> samples at 0.0..0.20.
+        assert [round(x.timestamp, 2) for x in imu.initial_samples(0.22)] == [
+            0.0, 0.05, 0.10, 0.15, 0.20
+        ]
+
+    def test_shorter_window_excludes_later_samples(self, imu):
+        assert [round(x.timestamp, 2) for x in imu.initial_samples(0.12)] == [
+            0.0, 0.05, 0.10
+        ]
+
+    def test_empty_before_open(self, imu_seq):
+        assert CODaIMU(imu_seq).initial_samples(2.0) == []
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------

@@ -156,6 +156,20 @@ class CODaIMU(IMUInterface):
         hi = int(np.searchsorted(self._sample_ts, hi_t, side="right"))
         return self._samples[lo:hi]
 
+    def initial_samples(self, duration_s: float = 2.0) -> List[IMUSample]:
+        """
+        The IMU samples in the first `duration_s` of the sequence.
+
+        Used for stationary bias initialisation — the robot typically
+        starts at rest, so this leading window estimates the gyro bias.
+        Not part of the IMUInterface ABC; consumers duck-type for it.
+        """
+        if not self._is_open or self._sample_ts.size == 0:
+            return []
+        cutoff = self._sample_ts[0] + duration_s
+        hi = int(np.searchsorted(self._sample_ts, cutoff, side="right"))
+        return self._samples[:hi]
+
     @property
     def rate_hz(self) -> float:
         return self._rate_hz

@@ -103,6 +103,7 @@ class VIOPoseEstimator(PoseEstimator):
             sigma_gyro_n=getattr(imu, "sigma_gyro_n",  1.7e-4),
             sigma_accel_n=getattr(imu, "sigma_accel_n", 2.0e-3),
         )
+        self._initial_state = initial_state
         self._ekf = VisualInertialEKF(
             ekf_cfg or VIOConfig(),
             initial_state=initial_state,
@@ -162,7 +163,7 @@ class VIOPoseEstimator(PoseEstimator):
         """Reset inner visual estimator + EKF state; IMU cursor preserved."""
         self._visual.reset()
         cfg = self._ekf._cfg   # reuse the config we were built with
-        self._ekf = VisualInertialEKF(cfg)
+        self._ekf = VisualInertialEKF(cfg, initial_state=self._initial_state)
         self._last_visual_ts = None
         self._has_information = False
 

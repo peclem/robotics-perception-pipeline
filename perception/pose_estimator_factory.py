@@ -120,10 +120,20 @@ def build_pose_estimator(cfg, raw: dict) -> PoseEstimator:
         visual_orientation_std_rad= v.visual_orientation_std_rad,
         gravity_w=                tuple(v.gravity_w),
     )
+    # Seed the EKF from a stationary IMU window when the backend can
+    # supply one (replay backends expose initial_samples()); this fixes
+    # the gyro bias up front instead of waiting for the EKF to converge.
+    initial_state = None
+    if hasattr(imu, "initial_samples"):
+        from state_estimation.imu_init import estimate_initial_state
+        initial_state = estimate_initial_state(imu.initial_samples(2.0))
+
     log.info(
-        "Wrapping %s in VIOPoseEstimator with IMU %r",
+        "Wrapping %s in VIOPoseEstimator with IMU %r (stationary init: %s)",
         type(visual).__name__, type(imu).__name__,
+        "yes" if initial_state is not None else "no",
     )
     return VIOPoseEstimator(
         visual_estimator=visual, imu=imu, ekf_cfg=ekf_cfg,
+        initial_state=initial_state,
     )
