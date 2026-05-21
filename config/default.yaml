@@ -163,7 +163,7 @@ world_map:
   max_age_s: 0.0            # 0 = grow forever; >0 drops entries unseen this long
   max_entries: 0            # 0 = no cap; >0 LRU-evicts to keep len <= max_entries
 imu:
-  type: "null"          # 'null' | 'synthetic' (hardware backends slot in here)
+  type: "null"          # 'null' | 'synthetic' | 'coda' (CODa IMU replay)
   frame_id: "imu_link"
   rate_hz: 200.0        # typical MEMS rate
   # Noise densities from IMU datasheet (defaults ~ Bosch BMI088 spec):

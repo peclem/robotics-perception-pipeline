@@ -1141,10 +1141,10 @@ def _validate(raw: dict) -> None:
     # IMU
     imu_raw = raw.get("imu", {})
     imu_type = imu_raw.get("type", "null")
-    if imu_type not in ("null", "synthetic"):
+    if imu_type not in ("null", "synthetic", "coda"):
         errors.append(
             f"imu.type={imu_type!r} is invalid. "
-            "Supported: 'null', 'synthetic'."
+            "Supported: 'null', 'synthetic', 'coda'."
         )
     _require_positive_float(errors, imu_raw, "imu.rate_hz")
     _require_positive_float(errors, imu_raw, "imu.sigma_gyro_n")

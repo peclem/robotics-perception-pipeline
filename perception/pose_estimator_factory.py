@@ -52,8 +52,19 @@ def build_imu(cfg) -> IMUInterface:
         )
         imu.open()
         return imu
+    if ic.type == "coda":
+        # CODa IMU replay — paced by the same sequence CODaDatasetCamera
+        # replays, so the VIO timelines stay synchronised.
+        from perception.coda_imu import CODaIMU
+        imu = CODaIMU(
+            cfg.coda_dataset.sequence_dir,
+            sigma_gyro_n=ic.sigma_gyro_n,
+            sigma_accel_n=ic.sigma_accel_n,
+        )
+        imu.open()
+        return imu
     raise ValueError(
-        f"Unknown imu.type={ic.type!r}. Supported: 'null', 'synthetic'."
+        f"Unknown imu.type={ic.type!r}. Supported: 'null', 'synthetic', 'coda'."
     )
 
 
