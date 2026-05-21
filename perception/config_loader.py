@@ -133,6 +133,16 @@ class TUMDatasetConfig:
 
 
 @dataclass
+class CODaDatasetConfig:
+    """Replay a CODa (UT Campus Object Dataset) sequence (--source coda)."""
+    sequence_dir: str           = "data/coda/seq0"
+    max_frames:   Optional[int] = None
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class DetectorConfig:
     model:                str                 = "yolov8n.pt"
     confidence_threshold: float               = 0.25
@@ -762,6 +772,7 @@ class PipelineConfig:
     video:                  VideoConfig                = field(default_factory=VideoConfig)
     synthetic_camera:       SyntheticCameraConfig      = field(default_factory=SyntheticCameraConfig)
     tum_dataset:            TUMDatasetConfig           = field(default_factory=TUMDatasetConfig)
+    coda_dataset:           CODaDatasetConfig          = field(default_factory=CODaDatasetConfig)
     detector:               DetectorConfig             = field(default_factory=DetectorConfig)
     tracker:                TrackerConfig              = field(default_factory=TrackerConfig)
     kalman_filter:          KalmanFilterConfig         = field(default_factory=KalmanFilterConfig)
@@ -797,6 +808,7 @@ class PipelineConfig:
             "video":                  self.video.as_dict(),
             "synthetic_camera":       self.synthetic_camera.as_dict(),
             "tum_dataset":            self.tum_dataset.as_dict(),
+            "coda_dataset":           self.coda_dataset.as_dict(),
             "detector":               self.detector.as_dict(),
             "tracker":                self.tracker.as_dict(),
             "kalman_filter":          self.kalman_filter.as_dict(),
@@ -1240,6 +1252,11 @@ def _validate(raw: dict) -> None:
     if tum_raw.get("max_frames") is not None:
         _require_positive_int(errors, tum_raw, "tum_dataset.max_frames")
 
+    # CODa dataset replay
+    coda_raw = raw.get("coda_dataset", {})
+    if coda_raw.get("max_frames") is not None:
+        _require_positive_int(errors, coda_raw, "coda_dataset.max_frames")
+
     # Visualization
     vis = raw.get("visualization", {})
     vas = vis.get("velocity_arrow_scale", 0.5)
@@ -1263,6 +1280,7 @@ def _build(raw: dict) -> PipelineConfig:
     v   = raw.get("video", {})
     s   = raw.get("synthetic_camera", {})
     tum = raw.get("tum_dataset", {})
+    coda = raw.get("coda_dataset", {})
     d   = raw.get("detector", {})
     t   = raw.get("tracker", {})
     kf  = raw.get("kalman_filter", {})
@@ -1339,6 +1357,10 @@ def _build(raw: dict) -> PipelineConfig:
             depth_factor=   float(tum.get("depth_factor", 5000.0)),
             max_frames=     int(tum["max_frames"]) if tum.get("max_frames") else None,
             assoc_max_diff= float(tum.get("assoc_max_diff", 0.02)),
+        ),
+        coda_dataset=CODaDatasetConfig(
+            sequence_dir= str(coda.get("sequence_dir", "data/coda/seq0")),
+            max_frames=   int(coda["max_frames"]) if coda.get("max_frames") else None,
         ),
         detector=DetectorConfig(
             model=                str(d.get("model", "yolov8n.pt")),

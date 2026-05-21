@@ -1,27 +1,32 @@
 """
-TUM RGB-D accuracy evaluation for the perception pipeline.
+Ground-truth accuracy evaluation for the perception pipeline.
 
-Replays a TUM RGB-D sequence through TUMDatasetCamera and scores the
-two unvalidated Phase 1 claims against the dataset's ground truth:
+Replays a dataset sequence and scores the unvalidated Phase 1 claims
+against its ground truth:
 
   - monocular depth   : Depth Anything V2 dense map vs the depth sensor
                         -> RMSE, AbsRel, delta<1.25  (per-frame, averaged)
-  - ego-pose / SLAM   : the PoseEstimator trajectory vs the mocap pose
+  - ego-pose / SLAM   : the PoseEstimator trajectory vs the GT pose
                         -> ATE (Sim(3)-aligned) + RPE (translation/rotation)
 
+Datasets (--dataset):
+  tum   indoor handheld RGB-D (TUMDatasetCamera) — depth + pose GT
+  coda  outdoor/sidewalk ground robot (CODaDatasetCamera) — pose GT
+        only; depth is skipped (CODa has no dense depth ground truth)
+
 The metric functions (umeyama_alignment, ate, rpe, depth_metrics) are
-pure and unit-tested in tests/test_eval_tum.py; this module only wires
-them to a live sequence.
+pure and unit-tested in tests/test_eval_dataset.py; this module only
+wires them to a live sequence.
 
 Usage
 -----
-python3 scripts/eval_tum.py --sequence data/rgbd_dataset_freiburg1_room
-python3 scripts/eval_tum.py --sequence data/... --max-frames 300 --out data/eval
-python3 scripts/eval_tum.py --sequence data/... --no-pose          # depth only
-python3 scripts/eval_tum.py --sequence data/... --depth-align median
+python3 scripts/eval_dataset.py --dataset tum  --sequence data/rgbd_dataset_freiburg1_room
+python3 scripts/eval_dataset.py --dataset coda --sequence data/coda/seq0 --out data/eval
+python3 scripts/eval_dataset.py --dataset tum  --sequence data/... --no-pose
+python3 scripts/eval_dataset.py --dataset tum  --sequence data/... --depth-align median
 
 Monocular SLAM has no metric scale, so ATE/RPE are reported after a
-Sim(3) alignment (Horn / Umeyama) — the standard TUM protocol. A pure
+Sim(3) alignment (Horn / Umeyama) — the standard protocol. A pure
 SE(3) alignment (no scale) is also printed for reference.
 """
 
@@ -42,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from perception.config_loader import load_config
 from perception.tum_dataset_camera import TUMDatasetCamera
+from perception.coda_dataset_camera import CODaDatasetCamera
 
 
 # ---------------------------------------------------------------------------
@@ -377,11 +383,12 @@ def score(acc: Dict[str, object], rpe_delta: int = 1) -> Dict[str, object]:
 # Reporting
 # ---------------------------------------------------------------------------
 
-def format_report(report: Dict[str, object], sequence: str) -> str:
+def format_report(report: Dict[str, object], sequence: str,
+                  dataset: str = "perception") -> str:
     """Human-readable summary block for stdout."""
     lines = [
         "=" * 64,
-        f"TUM RGB-D evaluation — {sequence}",
+        f"{dataset} evaluation — {sequence}",
         "=" * 64,
         f"frames replayed : {report['n_frames']}  ({report['wall_s']}s wall)",
     ]
@@ -423,9 +430,11 @@ def format_report(report: Dict[str, object], sequence: str) -> str:
 # ---------------------------------------------------------------------------
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="TUM RGB-D accuracy evaluation")
+    p = argparse.ArgumentParser(description="dataset accuracy evaluation")
+    p.add_argument("--dataset", choices=["tum", "coda"], default="tum",
+                   help="ground-truth dataset format")
     p.add_argument("--sequence", required=True,
-                   help="extracted TUM RGB-D sequence directory")
+                   help="extracted dataset sequence directory")
     p.add_argument("--config", default="config/default.yaml")
     p.add_argument("--max-frames", type=int, default=None)
     p.add_argument("--rpe-delta", type=int, default=1,
@@ -435,8 +444,20 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--no-depth", action="store_true", help="skip depth evaluation")
     p.add_argument("--no-pose", action="store_true", help="skip trajectory evaluation")
     p.add_argument("--out", default=None,
-                   help="directory to write eval_tum_<sequence>.json")
+                   help="directory to write eval_<dataset>_<sequence>.json")
     return p.parse_args(argv)
+
+
+def _open_camera(dataset: str, raw: dict, seq_dir: Path, max_frames):
+    """Open the dataset-specific CameraInterface backend."""
+    if dataset == "tum":
+        camera = TUMDatasetCamera(raw, seq_dir, max_frames=max_frames)
+    elif dataset == "coda":
+        camera = CODaDatasetCamera(raw, seq_dir, max_frames=max_frames)
+    else:
+        raise ValueError(f"unknown dataset: {dataset!r}")
+    camera.open()
+    return camera
 
 
 def _build_depth_estimator(cfg):
@@ -476,12 +497,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     with open(args.config) as f:
         raw = yaml.safe_load(f) or {}
 
-    print(f"Loading TUM sequence: {seq_dir}")
-    camera = TUMDatasetCamera(raw, seq_dir, max_frames=args.max_frames)
-    camera.open()
+    print(f"Loading {args.dataset} sequence: {seq_dir}")
+    camera = _open_camera(args.dataset, raw, seq_dir, args.max_frames)
     print(f"  {camera.total_frames} frames, intrinsics fx={camera.intrinsics.fx:.1f}")
 
-    depth_estimator = None if args.no_depth else _build_depth_estimator(cfg)
+    # CODa has no dense depth ground truth — force depth off for it.
+    no_depth = args.no_depth or args.dataset == "coda"
+    if args.dataset == "coda" and not args.no_depth:
+        print("  depth: skipped — CODa has no dense depth ground truth.")
+    depth_estimator = None if no_depth else _build_depth_estimator(cfg)
     pose_estimator = None if args.no_pose else _build_pose_estimator(cfg, raw)
     if depth_estimator is None and pose_estimator is None:
         print("error: neither depth nor pose estimator available — nothing to score.",
@@ -496,14 +520,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     report = score(acc, rpe_delta=args.rpe_delta)
     print()
-    print(format_report(report, seq_dir.name))
+    print(format_report(report, seq_dir.name, dataset=args.dataset))
 
     if args.out:
         out_dir = Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"eval_tum_{seq_dir.name}.json"
+        out_path = out_dir / f"eval_{args.dataset}_{seq_dir.name}.json"
         with open(out_path, "w") as f:
-            json.dump({"sequence": seq_dir.name, **report}, f, indent=2)
+            json.dump({"dataset": args.dataset, "sequence": seq_dir.name, **report},
+                      f, indent=2)
         print(f"\nwrote {out_path}")
 
     return 0

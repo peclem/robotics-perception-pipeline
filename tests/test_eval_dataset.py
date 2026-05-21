@@ -1,7 +1,7 @@
 """
-Unit tests for the TUM RGB-D evaluation metrics.
+Unit tests for the dataset evaluation metrics.
 
-The metric functions in scripts/eval_tum.py are pure — they take
+The metric functions in scripts/eval_dataset.py are pure — they take
 numpy arrays / pose lists and return numbers. These tests pin their
 behaviour on inputs with a known closed-form answer (identity, exact
 similarity transforms, uniform depth maps), so a regression in the
@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.eval_tum import (
+from scripts.eval_dataset import (
     ate,
     depth_metrics,
     format_report,

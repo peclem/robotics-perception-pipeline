@@ -27,6 +27,9 @@ tum_dataset:                                   # --source tum
   depth_factor: 5000.0                          # 16-bit PNG -> metres divisor
   max_frames: null                              # null = whole sequence
   assoc_max_diff: 0.02                          # RGB<->depth/pose match window (s)
+coda_dataset:                                  # --source coda
+  sequence_dir: data/coda/seq0                  # extracted CODa sequence root
+  max_frames: null                              # null = whole sequence
 detector:
   model: runs/detect/mot17_finetune-2/weights/best.pt
   confidence_threshold: 0.25
