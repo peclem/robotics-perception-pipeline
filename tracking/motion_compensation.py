@@ -12,16 +12,16 @@ Solution
 --------
 Estimate the 2D affine homography between consecutive frames using
 sparse optical flow on background keypoints. Project each track's
-predicted position through the inverse homography to remove the
-camera motion component before the KF update.
+predicted position through that homography to carry it into the
+current frame before association.
 
 Algorithm
 ---------
 1. Detect FAST corners in the previous frame (fast, parameter-free)
 2. Exclude corners inside tracked bounding boxes (object motion ≠ camera motion)
 3. Track corners to the current frame via Lucas-Kanade optical flow
-4. Estimate affine homography from matched point pairs (RANSAC)
-5. Apply inverse warp to each track's state: [cx, cy] → H⁻¹ @ [cx, cy, 1]
+4. Estimate affine homography prev→curr from matched point pairs (RANSAC)
+5. Warp each track's state into the current frame: [cx, cy] → H @ [cx, cy, 1]
 
 Reference
 ---------
@@ -230,29 +230,33 @@ class CameraMotionCompensator:
 
     def apply(self, tracks: List[Track], H: np.ndarray) -> None:
         """
-        Apply inverse homography to all track centre positions.
+        Warp all track centre positions by the camera homography.
 
-        Projects [cx, cy] through H⁻¹ to remove camera motion.
-        Updates the track's KF state directly.
+        `H` maps the previous frame to the current one. A track's KF
+        state is anchored in the previous frame (it was last associated
+        there), so projecting [cx, cy] through `H` — the forward
+        transform — carries it into the current frame, cancelling the
+        camera's apparent motion before association. Updates the KF
+        state in place.
+
+        Applying H⁻¹ instead would displace tracks by the *negative*
+        of the camera motion — doubling the apparent drift rather than
+        removing it. (That was the original bug; see test_motion_
+        compensation.py::test_apply_warps_in_camera_motion_direction.)
 
         Parameters
         ----------
         tracks : list of Track objects — KF states updated in-place
         H      : (3, 3) homography from previous frame to current frame
         """
-        try:
-            H_inv = np.linalg.inv(H)
-        except np.linalg.LinAlgError:
-            log.debug("CMC: singular homography — skipping apply")
-            return
-
         for track in tracks:
             cx, cy = track.position
 
-            # Homogeneous projection
-            pt    = np.array([cx, cy, 1.0], dtype=np.float64)
-            pt_w  = H_inv @ pt
-            pt_w /= pt_w[2]   # normalise
+            # Homogeneous projection through the forward (prev→curr) transform.
+            pt   = np.array([cx, cy, 1.0], dtype=np.float64)
+            pt_w = H @ pt
+            if abs(pt_w[2]) > 1e-9:
+                pt_w = pt_w / pt_w[2]   # normalise (no-op for an affine H)
 
             # Update KF state directly
             track.kf._x[0] = pt_w[0]   # cx
