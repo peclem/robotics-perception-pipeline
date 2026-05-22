@@ -166,6 +166,9 @@ class TrackerConfig:
     max_age:            int   = 30
     min_hits:           int   = 1
     use_ekf:            bool  = False
+    # Camera motion compensation: estimate a frame-to-frame homography
+    # and warp track predictions, so association survives a moving camera.
+    use_cmc:            bool  = False
     # Appearance-aware association. When True AND detection embeddings
     # are computed (typically via DINOv2), the cost matrix blends IoU
     # with cosine distance: cost = (1 - w) * iou + w * appearance.
@@ -1381,6 +1384,7 @@ def _build(raw: dict) -> PipelineConfig:
             max_age=           int(t.get("max_age", 30)),
             min_hits=          int(t.get("min_hits", 1)),
             use_ekf=           bool(t.get("use_ekf", False)),
+            use_cmc=           bool(t.get("use_cmc", False)),
             use_appearance=    bool(t.get("use_appearance", False)),
             appearance_weight= float(t.get("appearance_weight", 0.25)),
             appearance_ema=    float(t.get("appearance_ema", 0.9)),
