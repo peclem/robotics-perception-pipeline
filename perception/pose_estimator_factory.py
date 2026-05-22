@@ -128,12 +128,19 @@ def build_pose_estimator(cfg, raw: dict) -> PoseEstimator:
         from state_estimation.imu_init import estimate_initial_state
         initial_state = estimate_initial_state(imu.initial_samples(2.0))
 
+    # Camera→IMU extrinsic, when the IMU backend can supply one
+    # (CODaIMU loads it from the sequence calibration).
+    cam_imu_extrinsic = getattr(imu, "cam_imu_extrinsic", None)
+
     log.info(
-        "Wrapping %s in VIOPoseEstimator with IMU %r (stationary init: %s)",
+        "Wrapping %s in VIOPoseEstimator with IMU %r "
+        "(stationary init: %s, extrinsic: %s)",
         type(visual).__name__, type(imu).__name__,
         "yes" if initial_state is not None else "no",
+        "yes" if cam_imu_extrinsic is not None else "no",
     )
     return VIOPoseEstimator(
         visual_estimator=visual, imu=imu, ekf_cfg=ekf_cfg,
         initial_state=initial_state,
+        cam_imu_extrinsic=cam_imu_extrinsic,
     )

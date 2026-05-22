@@ -18,7 +18,9 @@ import numpy as np
 import pytest
 
 from perception.imu_interface import IMUSample
-from perception.coda_imu import CODaIMU, _read_coda_imu
+from perception.coda_imu import (
+    CODaIMU, _read_coda_imu, load_coda_cam_imu_extrinsic,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -198,3 +200,46 @@ class TestParseHelper:
         ts, accel, gyro = rows[0]
         assert ts == pytest.approx(1000.0)
         np.testing.assert_allclose(accel, [0.0, 0.0, 9.8])
+
+
+# ---------------------------------------------------------------------------
+# Camera→IMU extrinsic loader
+# ---------------------------------------------------------------------------
+
+def _write_extrinsic(path, T):
+    """Write a 4x4 matrix as a CODa calib_*.yaml extrinsic_matrix."""
+    import yaml
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({
+        "extrinsic_matrix": {"rows": 4, "cols": 4,
+                             "data": [float(v) for v in np.asarray(T).reshape(16)]},
+    }))
+
+
+class TestExtrinsic:
+    def test_composes_to_camera_imu_transform(self, tmp_path):
+        # T_vnav_os1 = identity; T_cam0_os1 = pure translation.
+        # T_imu_cam = T_vnav_os1 @ inv(T_cam0_os1) = translate(-t).
+        calib = tmp_path / "calibrations" / "0"
+        T_cam0_os1 = np.eye(4); T_cam0_os1[:3, 3] = [0.1, 0.2, 0.3]
+        _write_extrinsic(calib / "calib_os1_to_vnav.yaml", np.eye(4))
+        _write_extrinsic(calib / "calib_os1_to_cam0.yaml", T_cam0_os1)
+
+        R_ic, p_ic = load_coda_cam_imu_extrinsic(calib)
+        np.testing.assert_allclose(R_ic, np.eye(3), atol=1e-12)
+        np.testing.assert_allclose(p_ic, [-0.1, -0.2, -0.3], atol=1e-9)
+
+    def test_rotation_composition(self, tmp_path):
+        # T_cam0_os1 a pure 90° z-rotation → T_imu_cam = its inverse.
+        from scipy.spatial.transform import Rotation as _R
+        calib = tmp_path / "calibrations" / "0"
+        T_cam0_os1 = np.eye(4)
+        T_cam0_os1[:3, :3] = _R.from_rotvec([0, 0, np.pi / 2]).as_matrix()
+        _write_extrinsic(calib / "calib_os1_to_vnav.yaml", np.eye(4))
+        _write_extrinsic(calib / "calib_os1_to_cam0.yaml", T_cam0_os1)
+
+        R_ic, _ = load_coda_cam_imu_extrinsic(calib)
+        np.testing.assert_allclose(R_ic, T_cam0_os1[:3, :3].T, atol=1e-9)
+
+    def test_missing_calib_returns_none(self, tmp_path):
+        assert load_coda_cam_imu_extrinsic(tmp_path / "nonexistent") is None

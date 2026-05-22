@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
+import yaml
 
 from perception.imu_interface import IMUInterface, IMUSample
 from perception.coda_dataset_camera import read_coda_trajectory
@@ -52,6 +53,36 @@ def _read_coda_imu(path: str | Path) -> List[Tuple[float, np.ndarray, np.ndarray
             rows.append((ts, accel, gyro))
     rows.sort(key=lambda r: r[0])
     return rows
+
+
+def _read_extrinsic_matrix(path: str | Path) -> np.ndarray:
+    """Parse a CODa calib_*.yaml 'extrinsic_matrix' into a 4x4 array."""
+    with open(path) as f:
+        d = yaml.safe_load(f)
+    return np.array(d["extrinsic_matrix"]["data"], dtype=np.float64).reshape(4, 4)
+
+
+def load_coda_cam_imu_extrinsic(
+    calib_dir: str | Path,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Compose CODa's per-sequence calibration into the camera→IMU extrinsic.
+
+    CODa stores os1(LiDAR)→vnav(IMU) and os1→cam0 transforms. The VIO
+    fuser needs cam0→vnav:  T_vnav_cam0 = T_vnav_os1 · (T_cam0_os1)⁻¹.
+
+    Returns (R_imu_cam, p_imu_cam) with x_imu = R·x_cam + p (p metric,
+    metres), or None if either calibration file is absent.
+    """
+    calib_dir = Path(calib_dir)
+    f_vnav = calib_dir / "calib_os1_to_vnav.yaml"
+    f_cam0 = calib_dir / "calib_os1_to_cam0.yaml"
+    if not (f_vnav.exists() and f_cam0.exists()):
+        return None
+    T_vnav_os1 = _read_extrinsic_matrix(f_vnav)
+    T_cam0_os1 = _read_extrinsic_matrix(f_cam0)
+    T_imu_cam = T_vnav_os1 @ np.linalg.inv(T_cam0_os1)
+    return T_imu_cam[:3, :3].copy(), T_imu_cam[:3, 3].copy()
 
 
 class CODaIMU(IMUInterface):
@@ -82,6 +113,7 @@ class CODaIMU(IMUInterface):
         self._sample_ts = np.empty(0, dtype=np.float64)
         self._frame_ts = np.empty(0, dtype=np.float64)
         self._rate_hz = 0.0
+        self._cam_imu_extrinsic: Optional[Tuple[np.ndarray, np.ndarray]] = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -123,6 +155,11 @@ class CODaIMU(IMUInterface):
         if self._sample_ts.size > 1:
             span = self._sample_ts[-1] - self._sample_ts[0]
             self._rate_hz = (self._sample_ts.size - 1) / span if span > 0 else 0.0
+
+        # Camera→IMU extrinsic from the sequence calibration (None if absent).
+        self._cam_imu_extrinsic = load_coda_cam_imu_extrinsic(
+            self._dir / "calibrations" / seq_id
+        )
 
         self._is_open = True
 
@@ -177,6 +214,15 @@ class CODaIMU(IMUInterface):
     @property
     def total_samples(self) -> int:
         return len(self._samples)
+
+    @property
+    def cam_imu_extrinsic(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        (R_imu_cam, p_imu_cam) from the sequence calibration, or None if
+        the calib files were absent. Duck-typed by the pose factory to
+        wire the extrinsic into VIOPoseEstimator. Not on the ABC.
+        """
+        return self._cam_imu_extrinsic
 
     def __repr__(self) -> str:
         return (

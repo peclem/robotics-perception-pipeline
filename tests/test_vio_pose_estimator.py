@@ -269,3 +269,56 @@ class TestFactoryWiring:
 def cfg_dict_for_pipe(pipe):
     """Helper: the raw dict the factory expects, derived from PipelineConfig."""
     return pipe._cfg.as_dict()
+
+
+# ---------------------------------------------------------------------------
+# Camera→IMU extrinsic transform
+# ---------------------------------------------------------------------------
+
+class TestCameraImuExtrinsic:
+    """VIOPoseEstimator._to_body_frame — re-express the camera pose as
+    the IMU-body pose the EKF tracks, given the rigid extrinsic."""
+
+    @staticmethod
+    def _vio(extrinsic):
+        return VIOPoseEstimator(
+            visual_estimator=NullPoseEstimator(), imu=NullIMU(),
+            cam_imu_extrinsic=extrinsic,
+        )
+
+    @staticmethod
+    def _pose(R_mat, t):
+        return CameraPose(R=R_mat, t=np.asarray(t, float),
+                          timestamp=0.0, frame_idx=0, source="test")
+
+    def test_no_extrinsic_is_passthrough(self):
+        vio = self._vio(None)
+        out = vio._to_body_frame(self._pose(np.eye(3), [5.0, 1.0, 2.0]))
+        np.testing.assert_allclose(out.t, [5.0, 1.0, 2.0])
+        np.testing.assert_allclose(out.R, np.eye(3))
+
+    def test_translation_lever_arm(self):
+        # Camera 0.2 m ahead of the IMU in x ⇒ body sits 0.2 m behind.
+        vio = self._vio((np.eye(3), np.array([0.2, 0.0, 0.0])))
+        out = vio._to_body_frame(self._pose(np.eye(3), [5.0, 0.0, 0.0]))
+        np.testing.assert_allclose(out.t, [4.8, 0.0, 0.0], atol=1e-9)
+
+    def test_lever_arm_rotates_with_camera(self):
+        # 90° about z: the +x lever arm now points along +y.
+        Rz = R.from_rotvec([0, 0, np.pi / 2]).as_matrix()
+        vio = self._vio((np.eye(3), np.array([0.2, 0.0, 0.0])))
+        out = vio._to_body_frame(self._pose(Rz, [5.0, 0.0, 0.0]))
+        np.testing.assert_allclose(out.t, [5.0, -0.2, 0.0], atol=1e-9)
+
+    def test_metric_lever_arm_divided_by_scale(self):
+        # The lever arm is metric; the visual position is in scale units.
+        vio = self._vio((np.eye(3), np.array([0.2, 0.0, 0.0])))
+        vio.ekf.state.scale = 2.0
+        out = vio._to_body_frame(self._pose(np.eye(3), [5.0, 0.0, 0.0]))
+        np.testing.assert_allclose(out.t, [4.9, 0.0, 0.0], atol=1e-9)
+
+    def test_extrinsic_rotation_composes(self):
+        R_ic = R.from_rotvec([0, 0, np.pi / 2]).as_matrix()
+        vio = self._vio((R_ic, np.zeros(3)))
+        out = vio._to_body_frame(self._pose(np.eye(3), np.zeros(3)))
+        np.testing.assert_allclose(out.R, R_ic.T, atol=1e-9)

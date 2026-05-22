@@ -96,9 +96,22 @@ class VIOPoseEstimator(PoseEstimator):
         imu:              IMUInterface,
         ekf_cfg:          Optional[VIOConfig] = None,
         initial_state:    Optional[VIONominalState] = None,
+        cam_imu_extrinsic: Optional[tuple] = None,
     ) -> None:
         self._visual = visual_estimator
         self._imu = imu
+
+        # Camera→IMU extrinsic (R_imu_cam, p_imu_cam): x_imu = R·x_cam + p.
+        # None / identity ⇒ camera == IMU body (the v1 assumption).
+        if cam_imu_extrinsic is not None:
+            R_ic, p_ic = cam_imu_extrinsic
+            self._R_imu_cam = np.asarray(R_ic, dtype=np.float64).reshape(3, 3)
+            self._p_imu_cam = np.asarray(p_ic, dtype=np.float64).reshape(3)
+            self._has_extrinsic = True
+        else:
+            self._R_imu_cam = np.eye(3, dtype=np.float64)
+            self._p_imu_cam = np.zeros(3, dtype=np.float64)
+            self._has_extrinsic = False
         self._preint = IMUPreintegrator(
             sigma_gyro_n=getattr(imu, "sigma_gyro_n",  1.7e-4),
             sigma_accel_n=getattr(imu, "sigma_accel_n", 2.0e-3),
@@ -140,10 +153,11 @@ class VIOPoseEstimator(PoseEstimator):
                     self._ekf.predict(preint)
                     self._has_information = True
 
-        # 4. Visual measurement.
+        # 4. Visual measurement — transformed from the camera frame into
+        # the IMU body frame the EKF tracks (no-op if extrinsic is identity).
         visual_pose = self._visual.estimate(frame)
         if visual_pose is not None:
-            self._ekf.update(visual_pose)
+            self._ekf.update(self._to_body_frame(visual_pose))
             self._has_information = True
 
         self._last_visual_ts = frame.timestamp
@@ -158,6 +172,33 @@ class VIOPoseEstimator(PoseEstimator):
         out.timestamp = frame.timestamp
         out.source = "vio"
         return out
+
+    def _to_body_frame(self, visual_pose: CameraPose) -> CameraPose:
+        """
+        Re-express a camera-frame visual pose as the IMU-body pose the
+        EKF observes. The visual estimator tracks the camera; the EKF
+        tracks the IMU; they are rigidly offset by the extrinsic.
+
+        With R_imu_cam, p_imu_cam (x_imu = R·x_cam + p):
+            R_w_i  = R_w_c · R_imu_camᵀ
+            p_w_i  = p_w_c − R_w_i · p_imu_cam
+        The visual position is in monocular (unscaled) units, while the
+        lever arm p_imu_cam is metric — so it is divided by the EKF's
+        current scale estimate to land in the same units as the
+        measurement. Identity extrinsic ⇒ returns the pose unchanged.
+        """
+        if not self._has_extrinsic:
+            return visual_pose
+        R_w_c = np.asarray(visual_pose.R, dtype=np.float64).reshape(3, 3)
+        p_w_c = np.asarray(visual_pose.t, dtype=np.float64).reshape(3)
+        R_w_i = R_w_c @ self._R_imu_cam.T
+        scale = self._ekf.state.scale
+        p_w_i = p_w_c - (R_w_i @ self._p_imu_cam) / scale
+        return CameraPose(
+            R=R_w_i, t=p_w_i,
+            timestamp=visual_pose.timestamp, frame_idx=visual_pose.frame_idx,
+            confidence=visual_pose.confidence, source=visual_pose.source,
+        )
 
     def reset(self) -> None:
         """Reset inner visual estimator + EKF state; IMU cursor preserved."""
