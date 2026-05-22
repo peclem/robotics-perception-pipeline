@@ -13,7 +13,7 @@ A loosely-coupled error-state EKF that consumes:
 It outputs:
   - The maintained nominal pose at the visual frame (R_w_i, p_w_i),
     plus body-frame velocity, gyro bias, accel bias.
-  - The 15×15 error-state covariance.
+  - The 16×16 error-state covariance.
 
 The error-state factorisation is the standard one for VIO (Sola 2017,
 Forster 2017): nominal state lives on the SE(3) × R⁹ manifold,
@@ -22,15 +22,28 @@ applied via SO(3) right-multiplication: R_w_i ← R̂_w_i · Exp(δθ).
 
 State ordering
 --------------
-nominal:  (p_w_i, v_w_i, R_w_i, b_g, b_a)
-error:    (δp,   δv,    δθ,   δb_g, δb_a)        — 15-vector
+nominal:  (p_w_i, v_w_i, R_w_i, b_g, b_a, scale)
+error:    (δp,   δv,    δθ,   δb_g, δb_a, δs)    — 16-vector
 
-Indices into the 15-vector / 15×15 covariance, used everywhere:
+Indices into the 16-vector / 16×16 covariance, used everywhere:
     P 0:3
     V 3:6
     THETA 6:9
     BG 9:12
     BA 12:15
+    SCALE 15:16
+
+Visual scale (state 16)
+-----------------------
+A monocular visual estimator (DPVO) produces a trajectory with an
+arbitrary, drifting metric scale. `scale` is the visual→metric factor:
+the visual position measurement is modelled as z = p_w_i / scale. The
+IMU predict is metric, so whenever the platform accelerates the filter
+*observes* scale from the disagreement between the metric prediction
+and the scaled visual measurement — which a 15-D loosely-coupled VIO
+cannot do (it consumes the visual pose as if already metric). Scale is
+unobservable without acceleration excitation; its covariance simply
+stays large then.
 
 Coordinate-frame assumptions (v1)
 ---------------------------------
@@ -75,12 +88,16 @@ from state_estimation.imu_preintegration import PreintegratedMeasurement
 log = logging.getLogger(__name__)
 
 
-# State block indices into the 15-vector / 15×15 covariance.
+# State block indices into the 16-vector / 16×16 covariance.
 P_IDX = slice(0,  3)
 V_IDX = slice(3,  6)
 T_IDX = slice(6,  9)
 BG_IDX = slice(9, 12)
 BA_IDX = slice(12, 15)
+S_IDX = slice(15, 16)
+
+# Error-state dimension.
+_N = 16
 
 
 @dataclass
@@ -88,7 +105,7 @@ class VIONominalState:
     """
     Nominal (mean) state of the error-state EKF.
 
-    The error correction lives in 15-D tangent space; this struct holds
+    The error correction lives in 16-D tangent space; this struct holds
     the full SE(3) × R⁹ nominal that the correction is applied onto.
     """
     p_w_i: np.ndarray   # (3,)  body position in world frame, metres
@@ -96,6 +113,7 @@ class VIONominalState:
     R_w_i: np.ndarray   # (3,3) rotation: world ← body
     b_g:   np.ndarray   # (3,)  gyro bias, rad/s
     b_a:   np.ndarray   # (3,)  accel bias, m/s²
+    scale: float = 1.0  # visual→metric scale: z_visual = p_w_i / scale
 
     def __post_init__(self) -> None:
         self.p_w_i = np.asarray(self.p_w_i, dtype=np.float64).reshape(3)
@@ -103,13 +121,14 @@ class VIONominalState:
         self.R_w_i = np.asarray(self.R_w_i, dtype=np.float64).reshape(3, 3)
         self.b_g   = np.asarray(self.b_g,   dtype=np.float64).reshape(3)
         self.b_a   = np.asarray(self.b_a,   dtype=np.float64).reshape(3)
+        self.scale = float(self.scale)
 
     @classmethod
     def at_rest(cls) -> "VIONominalState":
-        """Identity orientation, zero position / velocity / bias."""
+        """Identity orientation, zero position / velocity / bias, unit scale."""
         return cls(
             p_w_i=np.zeros(3), v_w_i=np.zeros(3), R_w_i=np.eye(3),
-            b_g=np.zeros(3),   b_a=np.zeros(3),
+            b_g=np.zeros(3),   b_a=np.zeros(3),   scale=1.0,
         )
 
     def copy(self) -> "VIONominalState":
@@ -117,6 +136,7 @@ class VIONominalState:
             p_w_i=self.p_w_i.copy(), v_w_i=self.v_w_i.copy(),
             R_w_i=self.R_w_i.copy(),
             b_g=self.b_g.copy(),     b_a=self.b_a.copy(),
+            scale=self.scale,
         )
 
 
@@ -137,6 +157,13 @@ class VIOConfig:
     # --- bias random-walk process noise -------------------------------
     bias_gyro_random_walk:    float = 1e-5    # rad/s · √Hz
     bias_accel_random_walk:   float = 1e-4    # m/s² · √Hz
+    # --- visual scale -------------------------------------------------
+    # Initial 1σ on the visual→metric scale (nominal 1.0). Monocular
+    # scale is unknown a priori, so this prior is deliberately loose.
+    init_scale_std:           float = 0.5
+    # Random walk that lets the estimated scale track DPVO's slow scale
+    # drift along a trajectory rather than pinning one global value.
+    scale_random_walk:        float = 1e-3    # per √s
     # --- visual measurement noise -------------------------------------
     visual_position_std_m:    float = 0.05
     visual_orientation_std_rad: float = 0.02  # ~1.1°
@@ -161,7 +188,8 @@ class VisualInertialEKF:
 
     Conventions
     -----------
-    - Covariance ordering: [p, v, θ, b_g, b_a], each 3-D, total 15.
+    - Covariance ordering: [p, v, θ, b_g, b_a] (each 3-D) + scale (1-D),
+      total 16.
     - All rotations are stored as 3×3 matrices to match the IMU
       pre-integrator's convention.
     - Joseph form is used for the covariance update step
@@ -179,13 +207,14 @@ class VisualInertialEKF:
                      else VIONominalState.at_rest())
         self._t   = float(initial_timestamp)
 
-        self._P = np.zeros((15, 15), dtype=np.float64)
+        self._P = np.zeros((_N, _N), dtype=np.float64)
         s = cfg
         self._P[P_IDX,  P_IDX]  = np.eye(3) * (s.init_position_std_m      ** 2)
         self._P[V_IDX,  V_IDX]  = np.eye(3) * (s.init_velocity_std_mps    ** 2)
         self._P[T_IDX,  T_IDX]  = np.eye(3) * (s.init_orientation_std_rad ** 2)
         self._P[BG_IDX, BG_IDX] = np.eye(3) * (s.init_bias_gyro_std       ** 2)
         self._P[BA_IDX, BA_IDX] = np.eye(3) * (s.init_bias_accel_std      ** 2)
+        self._P[S_IDX,  S_IDX]  = np.eye(1) * (s.init_scale_std           ** 2)
 
         self._g_w = np.asarray(cfg.gravity_w, dtype=np.float64).reshape(3)
 
@@ -256,10 +285,11 @@ class VisualInertialEKF:
         v_new = self._x.v_w_i + g * dt + R_w_i @ preint.delta_v
         R_new = R_w_i @ preint.delta_R
 
-        # ---- error-state transition F (15×15) ----------------------------
+        # ---- error-state transition F (16×16) ----------------------------
         # Sola 2017 eq. 270, written in the right-perturbation
-        # convention R = R̂·Exp(δθ).
-        F = np.eye(15, dtype=np.float64)
+        # convention R = R̂·Exp(δθ). The scale row/column stay identity:
+        # an IMU pre-integration carries no scale information.
+        F = np.eye(_N, dtype=np.float64)
         F[P_IDX, V_IDX] = np.eye(3) * dt
         F[P_IDX, T_IDX] = -R_w_i @ _skew(preint.delta_p)
         F[V_IDX, T_IDX] = -R_w_i @ _skew(preint.delta_v)
@@ -273,14 +303,14 @@ class VisualInertialEKF:
         # Biases evolve as random walks → identity on themselves
         # (already set by np.eye init).
 
-        # ---- process noise Q (15×15) -------------------------------------
+        # ---- process noise Q (16×16) -------------------------------------
         # Two sources:
         #   1. Pre-integration measurement covariance — 9×9 in body-i frame,
         #      order [δθ, δv, δp]. Rotate position/velocity blocks into the
         #      world frame; rotation block stays (it's already a tangent-
         #      space perturbation, frame-independent at first order).
         #   2. Bias random walks — diagonal, scaled by dt.
-        Q = np.zeros((15, 15), dtype=np.float64)
+        Q = np.zeros((_N, _N), dtype=np.float64)
         Qpre = preint.covariance.copy()
         # Lift body-frame covariance blocks into world frame.
         # G has the rotation acting on velocity + position only.
@@ -290,7 +320,7 @@ class VisualInertialEKF:
         G[3:6, 3:6] = R_w_i
         G[6:9, 6:9] = R_w_i
         Qpre_w = G @ Qpre @ G.T
-        # Distribute into the 15×15: ordering inside Qpre is [θ, v, p],
+        # Distribute into the 16×16: ordering inside Qpre is [θ, v, p],
         # so map to T_IDX, V_IDX, P_IDX in the EKF state.
         Q[T_IDX, T_IDX] = Qpre_w[0:3, 0:3]
         Q[V_IDX, V_IDX] = Qpre_w[3:6, 3:6]
@@ -303,6 +333,8 @@ class VisualInertialEKF:
         # Bias random walks (independent of pre-integration cov).
         Q[BG_IDX, BG_IDX] = np.eye(3) * (self._cfg.bias_gyro_random_walk  ** 2) * dt
         Q[BA_IDX, BA_IDX] = np.eye(3) * (self._cfg.bias_accel_random_walk ** 2) * dt
+        # Scale random walk — lets the estimate follow DPVO's scale drift.
+        Q[S_IDX, S_IDX] = np.eye(1) * (self._cfg.scale_random_walk ** 2) * dt
 
         # ---- propagate ---------------------------------------------------
         self._P = F @ self._P @ F.T + Q
@@ -328,30 +360,37 @@ class VisualInertialEKF:
 
         Innovation
         ----------
-        y_p = z_t - p̂_w_i                     (3-vector)
+        y_p = z_t - p̂_w_i / ŝ                 (3-vector)
         y_θ = Log(R̂_w_i^T · z_R)              (3-vector, axis-angle)
 
-        Measurement Jacobian H (6×15), with state ordering [p, v, θ, b_g, b_a]:
-        H = ∂h/∂δx evaluated at δx=0. For direct observation of position
-        and orientation:
-            h_p(x̂ ⊕ δx) = p̂ + δp           → ∂h_p/∂δp = +I
+        Measurement Jacobian H (6×16), state ordering [p, v, θ, b_g, b_a, s]:
+        the visual position observes the metric position divided by scale,
+            h_p = p_w_i / s  → ∂h_p/∂δp = (1/ŝ)I,  ∂h_p/∂δs = -p̂_w_i/ŝ²
+        and the orientation is observed directly (scale-free):
             R̂_w_i^T · h_R(x̂ ⊕ δx) ≈ Exp(δθ) → ∂y_R/∂δθ = +I
-        Everything else is zero.
+        Everything else is zero. With ŝ = 1 this reduces to the plain
+        direct-observation Jacobian — except the δs column, which is what
+        lets a visual-position innovation also correct scale.
 
         Joseph form is used for the covariance update — the symmetric +
         positive-semidefinite-preserving form CLAUDE.md mandates.
         """
         z_R = np.asarray(visual_pose.R, dtype=np.float64).reshape(3, 3)
         z_t = np.asarray(visual_pose.t, dtype=np.float64).reshape(3)
+        s   = self._x.scale
 
-        # Innovation
-        y_p = z_t - self._x.p_w_i
+        # Innovation. The monocular visual position is the metric
+        # position divided by scale; rotation carries no scale.
+        y_p = z_t - self._x.p_w_i / s
         y_R = R.from_matrix(self._x.R_w_i.T @ z_R).as_rotvec()
         y = np.concatenate([y_p, y_R])
 
-        # Measurement Jacobian
-        H = np.zeros((6, 15), dtype=np.float64)
-        H[0:3, P_IDX] = np.eye(3)
+        # Measurement Jacobian H (6×16). With h_p = p_w_i / scale:
+        #   ∂h_p/∂δp = (1/s) I       ∂h_p/∂δs = -p_w_i / s²
+        # rotation is observed directly: ∂y_R/∂δθ = I.
+        H = np.zeros((6, _N), dtype=np.float64)
+        H[0:3, P_IDX] = np.eye(3) / s
+        H[0:3, S_IDX] = (-self._x.p_w_i / (s * s)).reshape(3, 1)
         H[3:6, T_IDX] = np.eye(3)
 
         # Measurement covariance
@@ -366,10 +405,10 @@ class VisualInertialEKF:
         S = H @ self._P @ H.T + Rm
         K = self._P @ H.T @ np.linalg.inv(S)
 
-        dx = K @ y                   # 15-vector correction
+        dx = K @ y                   # 16-vector correction
 
         # Joseph form: P = (I - K H) P (I - K H)^T + K R K^T
-        I_KH = np.eye(15) - K @ H
+        I_KH = np.eye(_N) - K @ H
         self._P = I_KH @ self._P @ I_KH.T + K @ Rm @ K.T
         self._P = 0.5 * (self._P + self._P.T)
 
@@ -391,6 +430,9 @@ class VisualInertialEKF:
         self._x.R_w_i = self._x.R_w_i @ _so3_exp(dx[T_IDX])
         self._x.b_g   = self._x.b_g   + dx[BG_IDX]
         self._x.b_a   = self._x.b_a   + dx[BA_IDX]
+        # Scale composes additively; clamp away from zero so the
+        # h_p = p / scale measurement model can never divide by ~0.
+        self._x.scale = max(1e-3, self._x.scale + float(dx[15]))
 
 
 # ---------------------------------------------------------------------------

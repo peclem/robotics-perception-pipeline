@@ -23,7 +23,7 @@ from state_estimation.imu_preintegration import (
 )
 from state_estimation.visual_inertial_ekf import (
     VIOConfig, VIONominalState, VisualInertialEKF,
-    P_IDX, V_IDX, T_IDX, BG_IDX, BA_IDX,
+    P_IDX, V_IDX, T_IDX, BG_IDX, BA_IDX, S_IDX,
 )
 
 
@@ -315,10 +315,16 @@ class TestEndToEnd:
         IMU stationary-with-gravity (no body acceleration apart from
         gravity reaction). Visual says: 'camera slides at 0.2 m/s along
         +X'. The EKF should track the position and back out velocity.
+
+        Scale is LOCKED here (init_scale_std≈0): with no acceleration the
+        visual scale is unobservable, so this test fixes it to isolate
+        the position-tracking behaviour. Scale estimation under proper
+        excitation is covered by TestScaleEstimation.
         """
         pre = IMUPreintegrator()
         cfg = VIOConfig(
             visual_position_std_m=5e-3, visual_orientation_std_rad=5e-3,
+            init_scale_std=1e-6, scale_random_walk=0.0,
         )
         ekf = VisualInertialEKF(cfg)
 
@@ -384,3 +390,75 @@ class TestBiasEstimation:
         # at least keeps it bounded).
         bg_var = ekf.covariance[BG_IDX, BG_IDX][2, 2]
         assert bg_var < cfg.init_bias_gyro_std ** 2 * 1.05
+
+
+# ---------------------------------------------------------------------------
+# Visual scale estimation (state 16)
+# ---------------------------------------------------------------------------
+
+class TestScaleEstimation:
+
+    def test_default_scale_is_unity(self):
+        assert VIONominalState.at_rest().scale == 1.0
+        assert VisualInertialEKF(VIOConfig()).state.scale == 1.0
+
+    def test_covariance_is_16x16(self):
+        assert VisualInertialEKF(VIOConfig()).covariance.shape == (16, 16)
+
+    def test_initial_scale_variance_from_config(self):
+        ekf = VisualInertialEKF(VIOConfig(init_scale_std=0.4))
+        assert np.isclose(ekf.covariance[S_IDX, S_IDX][0, 0], 0.4 ** 2)
+
+    def test_scale_survives_state_copy(self):
+        s = VIONominalState(
+            p_w_i=np.zeros(3), v_w_i=np.zeros(3), R_w_i=np.eye(3),
+            b_g=np.zeros(3), b_a=np.zeros(3), scale=1.7,
+        )
+        assert s.copy().scale == 1.7
+
+    def test_locked_scale_stays_unity(self):
+        # init_scale_std≈0 ⇒ scale frozen at 1.0 through visual updates.
+        cfg = VIOConfig(init_scale_std=1e-7, scale_random_walk=0.0)
+        ekf = VisualInertialEKF(cfg)
+        for k in range(10):
+            ekf.update(CameraPose(
+                R=np.eye(3), t=np.array([0.3 * k, 0.0, 0.0]),
+                timestamp=0.0, frame_idx=k, source="test",
+            ))
+        assert ekf.state.scale == pytest.approx(1.0, abs=1e-3)
+
+    def test_scale_converges_under_excitation(self):
+        """
+        The body genuinely accelerates, so the IMU sees true metric
+        motion; the visual estimator reports that same trajectory at
+        half scale (z = p_metric / 2). The EKF must recover scale → 2.0
+        from the IMU-vs-visual disagreement — the thing a 15-D
+        loosely-coupled VIO structurally cannot do.
+        """
+        pre = IMUPreintegrator()
+        cfg = VIOConfig(gravity_w=(0.0, 0.0, 0.0),
+                        visual_position_std_m=1e-2, init_scale_std=0.8)
+        ekf = VisualInertialEKF(cfg)
+        scale_true = 2.0
+        t = 0.0
+        for k in range(40):
+            samples = _imu_batch("accel_x", 20, t)
+            ekf.predict(pre.integrate(samples))
+            t = samples[-1].timestamp + 1.0 / 200.0
+            z = ekf.state.p_w_i / scale_true          # half-scale visual
+            ekf.update(CameraPose(
+                R=np.eye(3), t=z, timestamp=ekf.timestamp,
+                frame_idx=k, source="test",
+            ))
+        assert ekf.state.scale == pytest.approx(scale_true, rel=0.2)
+
+    def test_scale_unobservable_without_excitation_stays_bounded(self):
+        # No acceleration ⇒ scale is not pinned, but the filter must
+        # not diverge: scale stays finite and strictly positive.
+        ekf = VisualInertialEKF(VIOConfig(gravity_w=(0.0, 0.0, 0.0)))
+        for k in range(15):
+            ekf.update(CameraPose(
+                R=np.eye(3), t=np.array([0.1 * k, 0.0, 0.0]),
+                timestamp=0.0, frame_idx=k, source="test",
+            ))
+        assert 1e-3 <= ekf.state.scale < 100.0
