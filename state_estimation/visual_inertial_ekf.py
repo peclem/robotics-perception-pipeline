@@ -167,6 +167,10 @@ class VIOConfig:
     # --- visual measurement noise -------------------------------------
     visual_position_std_m:    float = 0.05
     visual_orientation_std_rad: float = 0.02  # ~1.1°
+    # --- zero-velocity update -----------------------------------------
+    # Measurement 1σ for a ZUPT (m/s). Small: when the platform is
+    # detected at rest, the body velocity really is ~0.
+    zupt_velocity_std:        float = 0.02
     # --- world ---------------------------------------------------------
     # Gravity expressed in the world frame. Default: Z-up world, so
     # gravity points along -Z. Override for ENU / NED / whatever your
@@ -408,6 +412,36 @@ class VisualInertialEKF:
         dx = K @ y                   # 16-vector correction
 
         # Joseph form: P = (I - K H) P (I - K H)^T + K R K^T
+        I_KH = np.eye(_N) - K @ H
+        self._P = I_KH @ self._P @ I_KH.T + K @ Rm @ K.T
+        self._P = 0.5 * (self._P + self._P.T)
+
+        self._inject(dx)
+
+    def update_zero_velocity(self, velocity_std: Optional[float] = None) -> None:
+        """
+        Zero-velocity update (ZUPT).
+
+        When the platform is known to be at rest the body velocity is
+        ~0. Applying that as a 3-DOF measurement of v_w_i bounds
+        velocity drift, and — through the velocity↔accel-bias
+        covariance the predict step builds up — also sharpens the
+        accel-bias estimate. Caller gates this on a stationarity test
+        (see state_estimation.imu_init.is_stationary). Joseph form, as
+        for the visual update.
+        """
+        std = (velocity_std if velocity_std is not None
+               else self._cfg.zupt_velocity_std)
+
+        y = -self._x.v_w_i                       # innovation: 0 − v̂_w_i
+        H = np.zeros((3, _N), dtype=np.float64)
+        H[:, V_IDX] = np.eye(3)
+        Rm = np.eye(3) * (std ** 2)
+
+        S = H @ self._P @ H.T + Rm
+        K = self._P @ H.T @ np.linalg.inv(S)
+        dx = K @ y
+
         I_KH = np.eye(_N) - K @ H
         self._P = I_KH @ self._P @ I_KH.T + K @ Rm @ K.T
         self._P = 0.5 * (self._P + self._P.T)

@@ -48,6 +48,38 @@ def _leading_stationary_run(
     return n
 
 
+def is_stationary(
+    samples: List[IMUSample],
+    *,
+    gyro_mag_thresh: float = 0.06,
+    accel_dev_thresh: float = 0.6,
+    gravity_mag: float = 9.81,
+) -> bool:
+    """
+    True when every IMU sample in the window looks at-rest.
+
+    At rest the angular rate is ~0 and the accelerometer reads only the
+    gravity reaction, so its magnitude sits near |g|; a moving platform
+    adds linear acceleration on top. Used to gate zero-velocity updates
+    (ZUPT). An empty window is treated as not-stationary.
+
+    Parameters
+    ----------
+    samples          : IMU samples for one inter-frame window.
+    gyro_mag_thresh  : |gyro| (rad/s) ceiling for "at rest".
+    accel_dev_thresh : allowed |‖accel‖ − |g|| deviation (m/s²).
+    gravity_mag      : gravity magnitude (m/s²).
+    """
+    if not samples:
+        return False
+    for s in samples:
+        if float(np.linalg.norm(s.gyro)) >= gyro_mag_thresh:
+            return False
+        if abs(float(np.linalg.norm(s.accel)) - gravity_mag) >= accel_dev_thresh:
+            return False
+    return True
+
+
 def estimate_gyro_bias(
     samples: List[IMUSample],
     *,

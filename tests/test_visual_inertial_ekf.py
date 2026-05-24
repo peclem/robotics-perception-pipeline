@@ -462,3 +462,47 @@ class TestScaleEstimation:
                 timestamp=0.0, frame_idx=k, source="test",
             ))
         assert 1e-3 <= ekf.state.scale < 100.0
+
+
+# ---------------------------------------------------------------------------
+# Zero-velocity update (ZUPT)
+# ---------------------------------------------------------------------------
+
+class TestZeroVelocityUpdate:
+
+    @staticmethod
+    def _moving_ekf(v):
+        s0 = VIONominalState(
+            p_w_i=np.zeros(3), v_w_i=np.asarray(v, dtype=float),
+            R_w_i=np.eye(3), b_g=np.zeros(3), b_a=np.zeros(3),
+        )
+        return VisualInertialEKF(VIOConfig(), initial_state=s0)
+
+    def test_zupt_pulls_velocity_toward_zero(self):
+        ekf = self._moving_ekf([1.0, -0.5, 0.3])     # ‖v‖ ≈ 1.16
+        ekf.update_zero_velocity()
+        assert np.linalg.norm(ekf.state.v_w_i) < 0.1
+
+    def test_zupt_shrinks_velocity_covariance(self):
+        ekf = self._moving_ekf([1.0, 0.0, 0.0])
+        before = ekf.covariance[V_IDX, V_IDX][0, 0]
+        ekf.update_zero_velocity()
+        assert ekf.covariance[V_IDX, V_IDX][0, 0] < before
+
+    def test_zupt_keeps_covariance_psd(self):
+        ekf = self._moving_ekf([0.8, 0.2, -0.4])
+        ekf.update_zero_velocity()
+        P = ekf.covariance
+        assert np.allclose(P, P.T)
+        assert np.linalg.eigvalsh(P).min() >= -1e-12
+
+    def test_zupt_noop_when_already_at_rest(self):
+        ekf = self._moving_ekf([0.0, 0.0, 0.0])
+        ekf.update_zero_velocity()
+        np.testing.assert_allclose(ekf.state.v_w_i, np.zeros(3), atol=1e-12)
+
+    def test_large_std_makes_zupt_weak(self):
+        # A huge ZUPT 1σ ⇒ the filter barely trusts v=0 ⇒ little change.
+        ekf = self._moving_ekf([1.0, 0.0, 0.0])
+        ekf.update_zero_velocity(velocity_std=1e3)
+        assert ekf.state.v_w_i[0] > 0.9

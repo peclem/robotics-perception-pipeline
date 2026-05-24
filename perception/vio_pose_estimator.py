@@ -19,8 +19,11 @@ On each `estimate(frame)`:
   1. Pull IMU samples since the previous frame's timestamp.
   2. Pre-integrate them via `IMUPreintegrator.integrate(...)`.
   3. EKF `predict()` consumes the pre-integration.
-  4. Call the inner visual estimator. If it returns a pose, EKF
-     `update()` consumes it as a 6-DOF measurement.
+  3b. If the IMU window is at rest, a zero-velocity update (ZUPT)
+     pins the body velocity to ~0 — bounds drift through stops.
+  4. Call the inner visual estimator. If it returns a pose, it is
+     re-expressed in the IMU body frame and EKF `update()` consumes
+     it as a 6-DOF measurement.
   5. Return the EKF's current pose, tagged source='vio'.
 
 What this v1 does NOT do
@@ -58,6 +61,7 @@ from perception.imu_interface import IMUInterface, NullIMU
 from perception.pose_estimator import (
     CameraPose, NullPoseEstimator, PoseEstimator,
 )
+from state_estimation.imu_init import is_stationary
 from state_estimation.imu_preintegration import IMUPreintegrator
 from state_estimation.visual_inertial_ekf import (
     VIOConfig, VIONominalState, VisualInertialEKF,
@@ -151,6 +155,12 @@ class VIOPoseEstimator(PoseEstimator):
                 if preint.dt > 0.0:
                     # 3. EKF predict.
                     self._ekf.predict(preint)
+                    self._has_information = True
+
+                # 3b. Zero-velocity update when the IMU window is at
+                # rest — bounds velocity + accel-bias drift through stops.
+                if is_stationary(samples):
+                    self._ekf.update_zero_velocity()
                     self._has_information = True
 
         # 4. Visual measurement — transformed from the camera frame into

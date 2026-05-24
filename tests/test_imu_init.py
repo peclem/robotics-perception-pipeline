@@ -12,7 +12,9 @@ import numpy as np
 import pytest
 
 from perception.imu_interface import IMUSample
-from state_estimation.imu_init import estimate_gyro_bias, estimate_initial_state
+from state_estimation.imu_init import (
+    estimate_gyro_bias, estimate_initial_state, is_stationary,
+)
 from state_estimation.visual_inertial_ekf import VIONominalState
 
 
@@ -92,3 +94,28 @@ class TestEstimateInitialState:
 
     def test_none_when_not_stationary(self):
         assert estimate_initial_state(_samples([[0.5, 0.0, 0.0]] * 40)) is None
+
+
+# ---------------------------------------------------------------------------
+# is_stationary
+# ---------------------------------------------------------------------------
+
+class TestIsStationary:
+    def test_at_rest_window_is_stationary(self):
+        # Small gyro bias, accel = pure gravity reaction.
+        assert is_stationary(_samples([_BIAS] * 5)) is True
+
+    def test_rotating_window_is_not_stationary(self):
+        assert is_stationary(_samples([[0.5, 0.0, 0.0]] * 5)) is False
+
+    def test_linear_acceleration_is_not_stationary(self):
+        # Gyro looks at rest, but the accel magnitude is well off |g|.
+        accels = [[5.0, 0.0, 9.81]] * 5          # ‖a‖ ≈ 11 m/s²
+        assert is_stationary(_samples([_BIAS] * 5, accels)) is False
+
+    def test_empty_window_is_not_stationary(self):
+        assert is_stationary([]) is False
+
+    def test_single_moving_sample_breaks_stationarity(self):
+        gyros = [_BIAS, _BIAS, [0.5, 0.0, 0.0], _BIAS]
+        assert is_stationary(_samples(gyros)) is False
