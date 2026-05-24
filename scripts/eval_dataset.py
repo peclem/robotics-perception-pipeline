@@ -497,6 +497,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     with open(args.config) as f:
         raw = yaml.safe_load(f) or {}
 
+    # For CODa, --sequence is authoritative: the VIO IMU (CODaIMU) is
+    # built from cfg.coda_dataset.sequence_dir deep inside the pose
+    # factory, so point it at the same sequence as the camera — otherwise
+    # VIO would fuse this sequence's camera with another's IMU.
+    if args.dataset == "coda":
+        cfg.coda_dataset.sequence_dir = str(seq_dir)
+        raw.setdefault("coda_dataset", {})["sequence_dir"] = str(seq_dir)
+
     print(f"Loading {args.dataset} sequence: {seq_dir}")
     camera = _open_camera(args.dataset, raw, seq_dir, args.max_frames)
     print(f"  {camera.total_frames} frames, intrinsics fx={camera.intrinsics.fx:.1f}")
