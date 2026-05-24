@@ -1,24 +1,26 @@
 # Benchmark Results — MOT17
 
-Generated: 2026-05-18 19:02:28  
-Config: `/tmp/bench_appearance.yaml`
+Generated: 2026-05-22 17:47:21  
+Config: `/tmp/cmc_on.yaml`
 
 ## Overall Metrics
 
 | Metric | Value |
 |--------|-------|
-| MOTA   | 50.7% |
-| MOTP   | 78.2% |
-| FP     | 1724 |
-| FN     | 5523 |
-| IDSW   | 116 |
+| MOTA   | 49.2% |
+| MOTP   | 76.8% |
+| FP     | 5721 |
+| FN     | 28249 |
+| IDSW   | 357 |
 
 ## Per-Sequence Results
 
 | Sequence | Frames | MOTA | MOTP | FP | FN | IDSW | Hz |
 |----------|--------|------|------|----|----|------|----|
-| MOT17-09-SDP | 525 | 52.7% | 78.1% | 723 | 1742 | 54 | 31.0 |
-| MOT17-11-SDP | 900 | 48.7% | 78.3% | 1001 | 3781 | 62 | 30.9 |
+| MOT17-04-FRCNN | 1050 | 65.9% | 81.14 | 3973 | 12168 | 76 | 14.6 |
+| MOT17-05-FRCNN | 837 | 52.7% | 77.1 | 460 | 2662 | 149 | 41.8 |
+| MOT17-10-FRCNN | 654 | 45.4% | 75.76 | 671 | 6267 | 68 | 12.6 |
+| MOT17-13-FRCNN | 750 | 32.7% | 73.41 | 617 | 7152 | 64 | 12.2 |
 
 ## System
 
