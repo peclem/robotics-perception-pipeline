@@ -21,9 +21,10 @@ On each `estimate(frame)`:
   3. EKF `predict()` consumes the pre-integration.
   3b. If the IMU window is at rest, a zero-velocity update (ZUPT)
      pins the body velocity to ~0 — bounds drift through stops.
-  4. Call the inner visual estimator. If it returns a pose, it is
-     re-expressed in the IMU body frame and EKF `update()` consumes
-     it as a 6-DOF measurement.
+  4. Call the inner visual estimator. The first returned pose snaps
+     the EKF nominal state directly (anchoring); subsequent poses
+     drive a 6-DOF Kalman `update()`. The body-frame extrinsic
+     transform is default-disabled — see `_apply_body_frame`.
   5. Return the EKF's current pose, tagged source='vio'.
 
 What this v1 does NOT do
@@ -131,6 +132,22 @@ class VIOPoseEstimator(PoseEstimator):
         # initial guess and returning it would mislead consumers into
         # thinking VIO has a pose lock when it doesn't.
         self._has_information: bool = False
+        # True once the first visual frame has snapped the EKF nominal
+        # pose to the visual estimator's world frame — see the
+        # `Anchoring on the first visual frame` block in estimate().
+        self._anchored: bool = False
+        # Camera→IMU body-frame transform on each visual update.
+        # DEFAULT-DISABLED. The transform is geometrically correct but
+        # the measurement model is missing the position↔orientation
+        # Jacobian H[0:3, T_IDX] = -[R·p_imu_cam]_× / s — without it
+        # every orientation update injects ~‖p_imu_cam‖ of fictitious
+        # position drift via the lever arm. Validated as an 8× ATE
+        # regression on CODa seq0 (see CLAUDE.md). Until the Jacobian
+        # is wired in, feed raw camera-frame visual poses to the EKF
+        # (camera-as-IMU convention, identical to pre-Stage-1 baseline).
+        # The extrinsic plumbing (R_imu_cam, p_imu_cam) stays loaded
+        # so the proper-Jacobian follow-up is a one-flag flip.
+        self._apply_body_frame: bool = False
 
     # ------------------------------------------------------------------
     # PoseEstimator ABC
@@ -163,11 +180,32 @@ class VIOPoseEstimator(PoseEstimator):
                     self._ekf.update_zero_velocity()
                     self._has_information = True
 
-        # 4. Visual measurement — transformed from the camera frame into
-        # the IMU body frame the EKF tracks (no-op if extrinsic is identity).
+        # 4. Visual measurement. Body-frame transform is default-off
+        # (see _apply_body_frame in __init__) — the EKF receives the
+        # raw camera-frame pose, treating camera-as-IMU. Flip the flag
+        # once the missing position↔orientation Jacobian lands.
         visual_pose = self._visual.estimate(frame)
         if visual_pose is not None:
-            self._ekf.update(self._to_body_frame(visual_pose))
+            body_pose = (self._to_body_frame(visual_pose)
+                         if self._apply_body_frame else visual_pose)
+            if not self._anchored:
+                # Anchoring on the first visual frame. The EKF's world
+                # frame starts at identity, but the body-frame transform
+                # sends the visual measurement to a pose rotated by
+                # R_imu_camᵀ (≈90° on CODa). Letting the small-angle
+                # Joseph update absorb that residual leaks spurious
+                # corrections into the bias and scale blocks through
+                # the cross-covariance. Instead, snap the EKF nominal
+                # pose to the (body-frame) visual measurement and skip
+                # the Kalman update for this frame. Subsequent frames
+                # have small residuals the linearised update handles.
+                self._ekf.state.R_w_i = np.asarray(
+                    body_pose.R, dtype=np.float64).reshape(3, 3)
+                self._ekf.state.p_w_i = np.asarray(
+                    body_pose.t, dtype=np.float64).reshape(3)
+                self._anchored = True
+            else:
+                self._ekf.update(body_pose)
             self._has_information = True
 
         self._last_visual_ts = frame.timestamp
@@ -217,6 +255,7 @@ class VIOPoseEstimator(PoseEstimator):
         self._ekf = VisualInertialEKF(cfg, initial_state=self._initial_state)
         self._last_visual_ts = None
         self._has_information = False
+        self._anchored = False
 
     @property
     def is_initialised(self) -> bool:

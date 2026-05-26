@@ -752,10 +752,14 @@ class VIOConfig:
     init_orientation_std_rad: float = 0.05
     init_bias_gyro_std:       float = 1e-3
     init_bias_accel_std:      float = 1e-2
+    # Scale state DEFAULT-DISABLED — see config/default.yaml comment.
+    init_scale_std:           float = 1e-8
     bias_gyro_random_walk:    float = 1e-5
     bias_accel_random_walk:   float = 1e-4
+    scale_random_walk:        float = 0.0
     visual_position_std_m:    float = 0.05
     visual_orientation_std_rad: float = 0.02
+    zupt_velocity_std:        float = 0.02     # ZUPT measurement 1σ (m/s)
     gravity_w:                List[float] = field(
         default_factory=lambda: [0.0, 0.0, -9.81]
     )
@@ -944,6 +948,20 @@ def _require_positive_float(errors: List[str], section: dict, full_key: str) -> 
             f"{full_key}={val} must be positive. "
             "Zero or negative variance is physically meaningless."
         )
+
+
+def _require_non_negative_float(errors: List[str], section: dict, full_key: str) -> None:
+    """Like _require_positive_float but allows zero — for noise terms
+    that may legitimately be 0 to mean "lock this state" (e.g. scale
+    random walk = 0 freezes the scale state at its initial value)."""
+    key = full_key.split(".")[-1]
+    val = section.get(key)
+    if val is None:
+        return
+    if not isinstance(val, (int, float)):
+        errors.append(f"{full_key}: expected a non-negative number, got {type(val).__name__}.")
+    elif val < 0.0:
+        errors.append(f"{full_key}={val} must be non-negative.")
 
 
 def _require_positive_int(errors: List[str], section: dict, full_key: str) -> None:
@@ -1157,10 +1175,13 @@ def _validate(raw: dict) -> None:
     vio_raw = raw.get("vio", {})
     for k in ("init_position_std_m", "init_velocity_std_mps",
               "init_orientation_std_rad", "init_bias_gyro_std",
-              "init_bias_accel_std", "bias_gyro_random_walk",
+              "init_bias_accel_std", "init_scale_std",
+              "bias_gyro_random_walk",
               "bias_accel_random_walk", "visual_position_std_m",
-              "visual_orientation_std_rad"):
+              "visual_orientation_std_rad", "zupt_velocity_std"):
         _require_positive_float(errors, vio_raw, f"vio.{k}")
+    # scale_random_walk = 0 is meaningful (lock scale at its initial value).
+    _require_non_negative_float(errors, vio_raw, "vio.scale_random_walk")
     g_w = vio_raw.get("gravity_w")
     if g_w is not None and (not isinstance(g_w, list) or len(g_w) != 3):
         errors.append("vio.gravity_w must be a list of 3 floats (world-frame gravity).")
@@ -1572,11 +1593,14 @@ def _build(raw: dict) -> PipelineConfig:
             init_orientation_std_rad= float(vio.get("init_orientation_std_rad", 0.05)),
             init_bias_gyro_std=       float(vio.get("init_bias_gyro_std",       1e-3)),
             init_bias_accel_std=      float(vio.get("init_bias_accel_std",      1e-2)),
+            init_scale_std=           float(vio.get("init_scale_std",           1e-8)),
             bias_gyro_random_walk=    float(vio.get("bias_gyro_random_walk",    1e-5)),
             bias_accel_random_walk=   float(vio.get("bias_accel_random_walk",   1e-4)),
+            scale_random_walk=        float(vio.get("scale_random_walk",        0.0)),
             visual_position_std_m=    float(vio.get("visual_position_std_m",    0.05)),
             visual_orientation_std_rad=
                                       float(vio.get("visual_orientation_std_rad", 0.02)),
+            zupt_velocity_std=        float(vio.get("zupt_velocity_std",        0.02)),
             gravity_w=                [float(x) for x in vio.get(
                 "gravity_w", [0.0, 0.0, -9.81]
             )],

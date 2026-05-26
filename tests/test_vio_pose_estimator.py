@@ -322,3 +322,104 @@ class TestCameraImuExtrinsic:
         vio = self._vio((R_ic, np.zeros(3)))
         out = vio._to_body_frame(self._pose(np.eye(3), np.zeros(3)))
         np.testing.assert_allclose(out.R, R_ic.T, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Anchor on the first visual frame
+# ---------------------------------------------------------------------------
+
+class TestFirstVisualAnchor:
+    """The first visual frame must snap the EKF nominal pose to match
+    the (default: untransformed) visual measurement, so the EKF world
+    frame aligns with the visual estimator's. Subsequent frames run
+    the normal Kalman update."""
+
+    @staticmethod
+    def _vio(extrinsic, visual):
+        return VIOPoseEstimator(
+            visual_estimator=visual, imu=NullIMU(),
+            ekf_cfg=_zero_gravity_cfg(),
+            cam_imu_extrinsic=extrinsic,
+        )
+
+    @staticmethod
+    def _pose(R_mat, t, idx=0):
+        return CameraPose(R=R_mat, t=np.asarray(t, float),
+                          timestamp=0.0, frame_idx=idx, source="test")
+
+    def test_first_visual_snaps_state_to_visual_pose_by_default(self):
+        # Default behaviour: body-frame transform off. Even with a big
+        # extrinsic the anchor uses the raw visual pose (camera-as-IMU
+        # convention — see _apply_body_frame in VIOPoseEstimator).
+        R_ic = R.from_rotvec([0, np.pi / 2, 0]).as_matrix()
+        first = self._pose(np.eye(3), [0.7, -0.3, 0.0])
+        vio = self._vio((R_ic, np.array([0.1, 0.0, 0.0])),
+                        _FixedVisual(first))
+        out = vio.estimate(_frame(t=0.0))
+        np.testing.assert_allclose(vio.ekf.state.R_w_i, np.eye(3),
+                                   atol=1e-9)
+        np.testing.assert_allclose(vio.ekf.state.p_w_i,
+                                   [0.7, -0.3, 0.0], atol=1e-9)
+        np.testing.assert_allclose(out.R, np.eye(3), atol=1e-9)
+
+    def test_first_visual_snaps_to_body_frame_pose_when_enabled(self):
+        # Flipping _apply_body_frame back on (Phase 5 re-activation
+        # path) restores the body-frame-transformed anchor: state R
+        # becomes R_w_c · R_imu_camᵀ = R_icᵀ on identity visual input.
+        R_ic = R.from_rotvec([0, np.pi / 2, 0]).as_matrix()
+        first = self._pose(np.eye(3), [0.0, 0.0, 0.0])
+        vio = self._vio((R_ic, np.array([0.1, 0.0, 0.0])),
+                        _FixedVisual(first))
+        vio._apply_body_frame = True
+        out = vio.estimate(_frame(t=0.0))
+        np.testing.assert_allclose(vio.ekf.state.R_w_i, R_ic.T, atol=1e-9)
+        np.testing.assert_allclose(out.R, R_ic.T, atol=1e-9)
+
+    def test_anchor_skips_the_kalman_update(self):
+        # An anchored frame must not move the covariance through update();
+        # the orientation block stays at its initial value.
+        R_ic = R.from_rotvec([0, np.pi / 2, 0]).as_matrix()
+        first = self._pose(np.eye(3), [1.0, 0.0, 0.0])
+        vio = self._vio((R_ic, np.zeros(3)), _FixedVisual(first))
+        P0 = vio.ekf.covariance.copy()
+        vio.estimate(_frame(t=0.0))
+        # Orientation P block unchanged → no update was applied.
+        from state_estimation.visual_inertial_ekf import T_IDX
+        np.testing.assert_allclose(vio.ekf.covariance[T_IDX, T_IDX],
+                                   P0[T_IDX, T_IDX], atol=1e-12)
+
+    def test_second_visual_runs_normal_update(self):
+        # Two frames in: first anchors, second must shrink the
+        # orientation covariance via the standard update.
+        first  = self._pose(np.eye(3), [0.0, 0.0, 0.0], idx=0)
+        second = self._pose(np.eye(3), [0.01, 0.0, 0.0], idx=1)
+        vio = self._vio((np.eye(3), np.zeros(3)),
+                        _SequenceVisual([first, second]))
+        vio.estimate(_frame(t=0.0, idx=0))           # anchor
+        P_after_anchor = vio.ekf.covariance.copy()
+        vio.estimate(_frame(t=0.1, idx=1))           # real update
+        from state_estimation.visual_inertial_ekf import T_IDX, P_IDX
+        # P[orientation] must shrink — the update added information.
+        assert (vio.ekf.covariance[T_IDX, T_IDX][0, 0]
+                < P_after_anchor[T_IDX, T_IDX][0, 0])
+        # P[position] must shrink too.
+        assert (vio.ekf.covariance[P_IDX, P_IDX][0, 0]
+                < P_after_anchor[P_IDX, P_IDX][0, 0])
+
+    def test_reset_un_anchors(self):
+        first = self._pose(np.eye(3), [1.0, 0.0, 0.0])
+        vio = self._vio((np.eye(3), np.zeros(3)), _FixedVisual(first))
+        vio.estimate(_frame(t=0.0))
+        assert vio._anchored is True
+        vio.reset()
+        assert vio._anchored is False
+
+    def test_identity_extrinsic_anchor_matches_visual(self):
+        # With identity extrinsic the anchor is just the visual pose.
+        first = self._pose(np.eye(3), [0.7, -0.3, 0.1])
+        vio = self._vio(None, _FixedVisual(first))
+        vio.estimate(_frame(t=0.0))
+        np.testing.assert_allclose(vio.ekf.state.p_w_i,
+                                   [0.7, -0.3, 0.1], atol=1e-9)
+        np.testing.assert_allclose(vio.ekf.state.R_w_i, np.eye(3),
+                                   atol=1e-9)

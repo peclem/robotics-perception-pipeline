@@ -114,10 +114,13 @@ def build_pose_estimator(cfg, raw: dict) -> PoseEstimator:
         init_orientation_std_rad= v.init_orientation_std_rad,
         init_bias_gyro_std=       v.init_bias_gyro_std,
         init_bias_accel_std=      v.init_bias_accel_std,
+        init_scale_std=           v.init_scale_std,
         bias_gyro_random_walk=    v.bias_gyro_random_walk,
         bias_accel_random_walk=   v.bias_accel_random_walk,
+        scale_random_walk=        v.scale_random_walk,
         visual_position_std_m=    v.visual_position_std_m,
         visual_orientation_std_rad= v.visual_orientation_std_rad,
+        zupt_velocity_std=        v.zupt_velocity_std,
         gravity_w=                tuple(v.gravity_w),
     )
     # Seed the EKF from a stationary IMU window when the backend can
