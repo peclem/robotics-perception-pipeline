@@ -9,9 +9,9 @@ IMUInterface (ABC)
                         + pre-integration math validation
 
 A real backend (Bosch BNO055, Bosch BMI088, Microstrain CV7-INS,
-phone IMU, Meta-glasses IMU) would slot in as a third concrete
-implementation. The interface is sample-pull rather than callback-push
-to fit cleanly into the existing frame-loop architecture.
+phone IMU) would slot in as a third concrete implementation. The
+interface is sample-pull rather than callback-push to fit cleanly
+into the existing frame-loop architecture.
 
 Coordinate convention
 ---------------------

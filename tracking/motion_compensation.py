@@ -33,8 +33,6 @@ Robotics context
 Static camera: CMC does nothing (identity homography estimated).
 Mobile robot:  CMC removes ego-motion from all track velocity estimates.
                Essential before integrating with a path planner.
-Meta glasses:  Full ego-motion from head rotation/translation — CMC
-               is the prerequisite for any meaningful velocity output.
 """
 
 from __future__ import annotations

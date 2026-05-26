@@ -17,7 +17,6 @@ Integration points
 2. Future backends — drop-in replacements, zero other changes:
        ORBSLAMPoseEstimator    — ORB-SLAM3 via socket/ROS2 topic
        VINSMonoPoseEstimator   — VINS-Mono monocular VIO
-       StereoVIOPoseEstimator  — stereo + IMU (Meta glasses Phase 6)
        ROS2PoseEstimator       — subscribes to /odom or /tf
 
 Coordinate convention

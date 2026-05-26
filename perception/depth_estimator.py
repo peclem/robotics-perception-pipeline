@@ -27,10 +27,9 @@ Not sufficient for precise manipulation.
 
 Upgrade path
 ------------
-Phase 5: Replace DepthAnythingEstimator with StereoDepthEstimator
-         using the Meta glasses stereo pair. Metric accuracy improves
-         to +-1-2% from stereo triangulation. Same interface — zero
-         changes to downstream modules.
+StereoSGBMDepthEstimator and RAFTStereoDepthEstimator already ship
+behind the same ABC for any future stereo rig — same interface,
+zero changes to downstream modules.
 
 Reference
 ---------
