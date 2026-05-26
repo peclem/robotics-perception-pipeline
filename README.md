@@ -12,92 +12,75 @@ navigation stacks.
 
 ## System architecture
 
-A complete robotics perception architecture. Implemented components are
-marked. Unimplemented components and their integration points are identified.
-
     ╔══════════════════════════════════════════════════════════════════╗
     ║  SENSING                                                         ║
     ║                                                                  ║
-    ║  [✓] Monocular RGB        CameraInterface ABC                    ║
-    ║  [✓] Camera calibration   scripts/calibrate_camera.py           ║
-    ║  [✓] IMU (synthetic)      IMUInterface ABC + SyntheticIMU,       ║
-    ║                           Forster pre-integration with           ║
-    ║                           uncertainty Jacobians.                 ║
-    ║                           Real-hardware backend pending.         ║
-    ║  [ ] Stereo camera        CameraInterface ABC — drop-in backend  ║
-    ║  [ ] LiDAR                point cloud processing                 ║
+    ║  Monocular RGB        CameraInterface ABC                        ║
+    ║  Camera calibration   scripts/calibrate_camera.py                ║
+    ║  IMU                  IMUInterface ABC + SyntheticIMU + CODa     ║
+    ║                       (replay). Forster pre-integration with     ║
+    ║                       uncertainty Jacobians.                     ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
     ╔══════════════════════════════════════════════════════════════════╗
     ║  SENSOR PREPROCESSING                                            ║
     ║                                                                  ║
-    ║  [✓] Distortion correction    load_intrinsics() + OpenCV        ║
-    ║  [✓] Frame timestamping       time.monotonic(), CameraFrame     ║
-    ║  [ ] Hardware timestamp sync  multi-sensor clock alignment      ║
+    ║  Distortion correction    load_intrinsics() + OpenCV             ║
+    ║  Frame timestamping       time.monotonic(), CameraFrame          ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
     ╔══════════════════════════════════════════════════════════════════╗
     ║  PERCEPTION                                                      ║
     ║                                                                  ║
-    ║  [✓] Object detection         YOLOv8n fine-tuned on MOT17       ║
-    ║  [✓] Multi-object tracking    ByteTrack two-stage association,  ║
-    ║                               optional DINOv2 appearance blend  ║
-    ║                               (StrongSORT/Deep OC-SORT-style)   ║
-    ║  [✓] KF state estimation      Joseph form, 8D state, NIS        ║
-    ║  [✓] EKF — constant turn rate 9D state + ω, analytical Jac.    ║
-    ║  [✓] Camera motion comp.      LK optical flow + affine RANSAC   ║
-    ║  [✓] Monocular depth          Depth Anything V2, metric         ║
-    ║  [✓] Monocular ego-pose       DPVO (deep patch VO) / DPV-SLAM   ║
-    ║                               (DPVO + loop closure), 15 Hz      ║
-    ║  [✓] ReID embeddings          DINOv2 (foundation, class-       ║
-    ║                                agnostic). IoU + cosine cost,    ║
-    ║                                StrongSORT-style blend.          ║
-    ║  [✓] Stereo depth             Classical (cv2.StereoSGBM) +      ║
-    ║                               neural (RAFT-Stereo, optional)    ║
-    ║                               (cv2.StereoSGBM). Drop-in under   ║
-    ║                               the existing DepthEstimator ABC.  ║
-    ║                               Neural backend (IGEV / Foundation- ║
-    ║                               Stereo) pending.                   ║
-    ║  [✓] IMU pre-integration      Forster (2017) ΔR/Δv/Δp +         ║
-    ║                               covariance + bias Jacobians.      ║
-    ║  [✓] VIO fuser                Error-state EKF (15-D), Joseph    ║
-    ║                               update; consumes preint + visual  ║
-    ║                               pose. Loose coupling.             ║
-    ║  [✓] VIO live orchestration   VIOPoseEstimator wraps visual +   ║
-    ║                               IMU behind PoseEstimator ABC.     ║
-    ║                               vio.enabled flag in config.       ║
-    ║  [✓] Semantic segmentation    Mask2Former (Swin-T, Cityscapes), ║
-    ║                               drivable_mask + class-stability  ║
-    ║                               helpers. ABC + Null fallback.    ║
-    ║                               Wired into launch.py with        ║
-    ║                               per-frame stage + SceneGraph     ║
-    ║                               stability refinement.            ║
+    ║  Object detection         YOLOv8n fine-tuned on MOT17            ║
+    ║  Multi-object tracking    ByteTrack two-stage association,       ║
+    ║                           optional DINOv2 appearance blend       ║
+    ║                           (StrongSORT/Deep OC-SORT-style)        ║
+    ║  KF state estimation      Joseph form, 8D state, NIS             ║
+    ║  EKF — constant turn rate 9D state + ω, analytical Jac.         ║
+    ║  Camera motion comp.      LK optical flow + affine RANSAC        ║
+    ║  Monocular depth          Depth Anything V2, metric              ║
+    ║  Monocular ego-pose       DPVO (deep patch VO) / DPV-SLAM        ║
+    ║                           (DPVO + loop closure)                  ║
+    ║  ReID embeddings          DINOv2 (foundation, class-agnostic).   ║
+    ║                           IoU + cosine cost, StrongSORT-style    ║
+    ║                           blend.                                 ║
+    ║  Stereo depth             Classical (cv2.StereoSGBM) + neural    ║
+    ║                           (RAFT-Stereo). Drop-in under the       ║
+    ║                           existing DepthEstimator ABC.           ║
+    ║  IMU pre-integration      Forster (2017) ΔR/Δv/Δp + covariance + ║
+    ║                           bias Jacobians.                        ║
+    ║  VIO fuser                Loosely-coupled error-state EKF (16-D, ║
+    ║                           scale state default-off — see          ║
+    ║                           "Outdoor-pose Stage 1" note), Joseph   ║
+    ║                           update, ZUPT, first-frame anchor.      ║
+    ║  VIO live orchestration   VIOPoseEstimator wraps visual + IMU    ║
+    ║                           behind PoseEstimator ABC.              ║
+    ║                           vio.enabled flag in config.            ║
+    ║  Semantic segmentation    Mask2Former (Swin-T, Cityscapes),      ║
+    ║                           drivable_mask + class-stability        ║
+    ║                           helpers. Wired into launch.py with     ║
+    ║                           per-frame stage + SceneGraph stability ║
+    ║                           refinement.                            ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
     ╔══════════════════════════════════════════════════════════════════╗
     ║  COORDINATE FRAMES                                               ║
     ║                                                                  ║
-    ║  [✓] TransformTree            map ← odom ← base_link ←         ║
-    ║                               camera_frame, static + dynamic     ║
-    ║                               edges, lookup via common ancestor  ║
-    ║  [✓] Ego-pose (monocular)     DPVOPoseEstimator wraps DPVO,      ║
-    ║                               stride-decoupled (15 Hz pose at    ║
-    ║                               30 Hz camera). NullPoseEstimator   ║
-    ║                               fallback for camera-frame-only     ║
-    ║                               mode.                              ║
-    ║  [ ] Metric scale anchor      monocular VO has unobservable      ║
-    ║                               scale; anchor against Depth        ║
-    ║                               Anything V2 (deferred to Phase 1   ║
-    ║                               validation work)                   ║
-    ║  [✓] SLAM / loop closure      DPV-SLAM — DPVO + proximity +     ║
-    ║                               DBoW2 loop closure. Drift-         ║
-    ║                               corrected on revisit. Drop-in via  ║
-    ║                               pose_estimator.type='dpv_slam'.    ║
+    ║  TransformTree            map ← odom ← base_link ← camera_frame, ║
+    ║                           static + dynamic edges, lookup via     ║
+    ║                           common ancestor.                       ║
+    ║  Ego-pose (monocular)     DPVOPoseEstimator wraps DPVO, stride-  ║
+    ║                           decoupled. NullPoseEstimator fallback  ║
+    ║                           for camera-frame-only mode.            ║
+    ║  SLAM / loop closure      DPV-SLAM — DPVO + proximity + DBoW2    ║
+    ║                           loop closure. Drift-corrected on       ║
+    ║                           revisit. pose_estimator.type='dpv_slam'║
     ║                                                                  ║
-    ║  ObjectState.position_world (X, Y, Z) metres in the map frame   ║
+    ║  ObjectState.position_world (X, Y, Z) metres in the map frame    ║
     ║  is populated when ego-pose is available. SceneGraph.update()    ║
     ║  routes via the transform tree; query_nearby(frame='world')      ║
     ║  is the planner-facing metric query.                             ║
@@ -107,48 +90,43 @@ marked. Unimplemented components and their integration points are identified.
     ╔══════════════════════════════════════════════════════════════════╗
     ║  WORLD MODEL                                                     ║
     ║                                                                  ║
-    ║  [✓] Dynamic object tracking  SceneGraph, ObjectState           ║
-    ║  [✓] Per-object covariance    full 8x8 / 9x9 matrix            ║
-    ║  [✓] Trajectory history       bounded KFSnapshot deque          ║
-    ║  [✓] Metric 3D positions      position_3d from depth            ║
-    ║  [✓] Spatial queries          query_nearby(pos, radius)         ║
-    ║  [✓] Uncertainty queries      Mahalanobis distance              ║
-    ║  [✓] Dynamic obstacle grid    nav_msgs/OccupancyGrid,           ║
-    ║                               2σ-covariance inflation per       ║
-    ║                               object, depth-projected when      ║
-    ║                               available                         ║
-    ║  [✓] 3D occupancy             Sparse voxel grid →               ║
-    ║                               sensor_msgs/PointCloud2           ║
-    ║                               (always) + octomap_msgs/Octomap   ║
-    ║                               (when octomap+_msgs installed)    ║
-    ║  [✓] Room layer (3D scene-    Morphological-erosion clustering  ║
-    ║      graph hierarchy)         on occupancy → labelled polygons  ║
-    ║                               with object membership. v1 is     ║
-    ║                               stateless per frame; persistent   ║
-    ║                               room tracking deferred.           ║
-    ║  [✓] Per-class spatial memory STATIC / SEMI_STATIC / DYNAMIC    ║
-    ║                               classification (class prior +     ║
-    ║                               motion override). STATIC objects  ║
-    ║                               persist indefinitely; DYNAMIC     ║
-    ║                               decay in seconds.                 ║
-    ║  [✓] WorldMap + ReID          DINOv2 foundation-model           ║
-    ║                               embeddings, spatial gate +        ║
-    ║                               cosine similarity re-association  ║
-    ║                               on revisit. ObjectState carries   ║
-    ║                               a stable persistent_id across     ║
-    ║                               ByteTracker ID resets.            ║
-    ║  [✓] Health monitor           per-stage LatencyTracker + topic  ║
-    ║                               inter-arrival, OK/WARN/ERROR/     ║
-    ║                               STALE on /diagnostics             ║
-    ║  [✓] Drivable freespace       IPM projection of the semantic   ║
-    ║      costmap                  drivable mask onto the ground.   ║
-    ║                               Depth-aware backend (back-       ║
-    ║                               project via dense depth) and     ║
-    ║                               flat-ground fallback. Output as  ║
-    ║                               nav_msgs/OccupancyGrid (0=drive, ║
-    ║                               -1=unknown) — fuses with the     ║
-    ║                               obstacle layer in Nav2.          ║
-    ║  [ ] Static obstacle layer    pre-mapped walls; needs SLAM      ║
+    ║  Dynamic object tracking  SceneGraph, ObjectState                ║
+    ║  Per-object covariance    full 8x8 / 9x9 matrix                  ║
+    ║  Trajectory history       bounded KFSnapshot deque               ║
+    ║  Metric 3D positions      position_3d from depth                 ║
+    ║  Spatial queries          query_nearby(pos, radius)              ║
+    ║  Uncertainty queries      Mahalanobis distance                   ║
+    ║  Dynamic obstacle grid    nav_msgs/OccupancyGrid, 2σ-covariance  ║
+    ║                           inflation per object, depth-projected. ║
+    ║  3D occupancy             Sparse voxel grid →                    ║
+    ║                           sensor_msgs/PointCloud2 (always) +     ║
+    ║                           octomap_msgs/Octomap (when installed). ║
+    ║  Room layer (3D scene-    Morphological-erosion clustering on    ║
+    ║  graph hierarchy)         occupancy → labelled polygons with     ║
+    ║                           object membership.                     ║
+    ║  Per-class spatial memory STATIC / SEMI_STATIC / DYNAMIC         ║
+    ║                           classification (class prior + motion   ║
+    ║                           override).                             ║
+    ║  WorldMap + ReID          DINOv2 foundation-model embeddings,    ║
+    ║                           spatial gate + cosine similarity       ║
+    ║                           re-association on revisit. ObjectState ║
+    ║                           carries a stable persistent_id across  ║
+    ║                           ByteTracker ID resets.                 ║
+    ║  Semantic SLAM            Persistent voxel-hashed metric-        ║
+    ║                           semantic map (SemanticMap / Kimera-    ║
+    ║                           Semantics back-end). Per-voxel         ║
+    ║                           occupancy log-odds + fused semantic    ║
+    ║                           class distribution. ROS2 +             ║
+    ║                           Rerun viewers.                         ║
+    ║  Health monitor           per-stage LatencyTracker + topic       ║
+    ║                           inter-arrival, OK/WARN/ERROR/STALE     ║
+    ║                           on /diagnostics.                       ║
+    ║  Drivable freespace       IPM projection of the semantic         ║
+    ║  costmap                  drivable mask onto the ground.         ║
+    ║                           Depth-aware backend + flat-ground      ║
+    ║                           fallback. nav_msgs/OccupancyGrid       ║
+    ║                           (0=drive, -1=unknown) — fuses with the ║
+    ║                           obstacle layer in Nav2.                ║
     ╚══════════════════════════════════════════════════════════════════╝
                           │
                           ▼
@@ -158,7 +136,7 @@ marked. Unimplemented components and their integration points are identified.
     ║  Python API:                                                     ║
     ║    SceneGraph.query_nearby(robot_position, radius,               ║
     ║                            frame='camera' | 'world')             ║
-    ║      → List[(distance, ObjectState)] sorted, with covariance    ║
+    ║      → List[(distance, ObjectState)] sorted, with covariance     ║
     ║                                                                  ║
     ║  ROS2 API:                                                       ║
     ║    /perception/scene             vision_msgs/Detection3DArray    ║
@@ -167,36 +145,19 @@ marked. Unimplemented components and their integration points are identified.
     ║    /perception/drivable_costmap  nav_msgs/OccupancyGrid          ║
     ║                                  (drivable freespace, IPM-       ║
     ║                                  projected from semantic mask)   ║
-    ║    /perception/drivable_mask     sensor_msgs/Image (mono8 —      ║
-    ║                                  image-space drivable mask)      ║
+    ║    /perception/drivable_mask     sensor_msgs/Image (mono8)       ║
     ║    /perception/voxels            sensor_msgs/PointCloud2         ║
-    ║                                  (3D occupancy)                  ║
     ║    /perception/octomap           octomap_msgs/Octomap            ║
-    ║                                  (when octomap installed)        ║
-    ║    /perception/depth             sensor_msgs/Image (32FC1 —      ║
-    ║                                  dense metric depth)             ║
+    ║    /perception/semantic_map      sensor_msgs/PointCloud2 XYZRGB  ║
+    ║    /perception/depth             sensor_msgs/Image (32FC1)       ║
     ║    /perception/odom              nav_msgs/Odometry (fused VIO    ║
     ║                                  when vio.enabled, else visual)  ║
     ║    /tf                           map → camera_frame              ║
-    ║                                  (when ego-pose on)              ║
-    ║                                                                  ║
-    ║  [ ] Global planner           Nav2 / RRT / A*                   ║
-    ║  [ ] Local planner            DWA / TEB / MPC                   ║
-    ║  [ ] Behaviour tree           BehaviorTree.CPP                  ║
-    ╚══════════════════════════════════════════════════════════════════╝
-                          │
-                          ▼
-    ╔══════════════════════════════════════════════════════════════════╗
-    ║  CONTROL                                                         ║
-    ║                                                                  ║
-    ║  [ ] ros2_control             hardware interface layer           ║
-    ║  [ ] PID / LQR / MPC          motor control loops               ║
-    ║  [ ] Safety monitor           watchdog, graceful degradation     ║
     ╚══════════════════════════════════════════════════════════════════╝
 
-    ROS2 adapter nodes: ros2_ws/src/robotics_perception_ros2/
-    wraps each implemented module in thin sensor_msgs / vision_msgs /
-    nav_msgs interfaces. Launch with
+    ROS2 adapter nodes: ros2_ws/src/robotics_perception_ros2/ wraps each
+    module in thin sensor_msgs / vision_msgs / nav_msgs interfaces.
+    Launch with
         ros2 launch robotics_perception_ros2 perception_pipeline.launch.py
     See "ROS2 integration" section below for topic graph + setup.
 
@@ -247,7 +208,7 @@ marked. Unimplemented components and their integration points are identified.
         ▼ (when vio.enabled)
     VIOPoseEstimator (wraps visual + IMU)
         Pulls IMU samples since last visual frame → Forster
-        pre-integration → 15-D error-state EKF predict; visual pose
+        pre-integration → 16-D error-state EKF predict; visual pose
         as 6-DOF measurement → EKF update (Joseph form). Output is
         the fused CameraPose with the same world ← camera signature.
         │
@@ -404,7 +365,7 @@ the model path in config/default.yaml.
                                                             (every 2nd frame
                                                              → ~8 ms amortised
                                                              at 640×480)
-    Visual-inertial fusion     Error-state EKF (15-D)      ~0.3 ms / step
+    Visual-inertial fusion     Error-state EKF (16-D)      ~0.3 ms / step
     World model                SceneGraph + KFSnapshot     ~0.2 ms
     Occupancy 2D / 3D          Numpy sphere stamping       ~0.5 ms / 1.0 ms
     Drivable costmap (IPM)     Vectorised projector        ~0.8 ms
@@ -487,16 +448,6 @@ PC's IP, then treat the resulting stream URL like a video file:
 
     python3 launch.py --source video --input rtsp://<phone-ip>:1935/live \
         --rerun-save data/iphone_demo.rrd
-
-(Tested with the iPhone 11 series; newer Pro models add LiDAR but
-the perception stack is fine on monocular for the showcase.)
-
-### From the Meta glasses
-
-Stream the glasses' camera + IMU to the PC over BT/WiFi via the
-Meta SDK, then run as if it were a video source. The IMU stream is
-optional — set `imu.type: synthetic` (or `null`) until the BT pipe
-to the real IMU is wired.
 
 ### Recording shortcuts
 
@@ -742,10 +693,11 @@ The graph is a faithful adapter, not a tuned production deployment.
   messages still serialise. Combined with GIL contention, throughput
   is slightly *worse* (~5 Hz) than the multi-process variant.
 
-The real fix on this stack is a C++ rewrite of the adapter nodes as
-composable components. Deferred — multi-process Python at 6 Hz is
-adequate for demonstrating the graph; real production deployments
-would invest in the C++ port.
+A C++ rewrite of the adapter nodes as composable components would
+get true zero-copy IPC, but it is **explicitly off the roadmap** —
+the project's bottleneck is perception-layer accuracy (outdoor pose,
+tightly-coupled VIO), not ROS2 transport. 6 Hz multi-process Python
+is adequate for the demo role ROS2 plays here.
 
 ### Lossiness across the ROS boundary
 
@@ -769,18 +721,19 @@ extension first — see "DPVO setup" above.
 
     python3 -m pytest tests/ -m "not integration" -v
 
-748 unit tests across detection, tracking, state estimation (including
-bias-aware IMU pre-integration with numerical Jacobian verification),
-world model, coordinate frames (TransformTree), DPVO wrapper, mono +
-stereo depth, occupancy grid (2D + 3D), drivable freespace IPM
-projector (flat-ground + depth-aware), stability classification,
-appearance extractor, WorldMap (with opt-in eviction), room layer,
-health monitor, IMU interface, pose-estimator factory, visualisation,
-and benchmarks. All tests use SyntheticCamera / synthetic IMU /
-synthetic data — no hardware required. Integration tests (real GPU,
-live DPVO / DINOv2 / Mask2Former models) are marked and excluded from
-CI; run with `pytest -m integration`. CI runs the unit suite on every
-push and PR to main (see badge at the top).
+959 unit tests across detection, tracking, state estimation (including
+bias-aware IMU pre-integration with numerical Jacobian verification +
+the visual-inertial EKF with scale state, ZUPT, anchoring), world
+model, coordinate frames (TransformTree), DPVO wrapper, mono + stereo
+depth, occupancy grid (2D + 3D), drivable freespace IPM projector,
+stability classification, appearance extractor, WorldMap (with opt-in
+eviction), room layer, semantic map (Kimera-Semantics), health
+monitor, IMU interface, pose-estimator factory, visualisation, and
+benchmarks. All tests use SyntheticCamera / synthetic IMU / synthetic
+data — no hardware required. Integration tests (real GPU, live DPVO /
+DINOv2 / Mask2Former models) are marked and excluded from CI; run
+with `pytest -m integration`. CI runs the unit suite on every push
+and PR to main (see badge at the top).
 
 ---
 
@@ -834,8 +787,10 @@ below — the YAML itself is the canonical reference.
         synthetic_seed: 0
 
     vio:
-        # 15-D error-state EKF (state_estimation/visual_inertial_ekf.py).
+        # 16-D error-state EKF (state_estimation/visual_inertial_ekf.py).
         # Predicts with pre-integrated IMU, updates with the visual pose.
+        # The visual-scale state is DEFAULT-DISABLED (init_scale_std≈0,
+        # scale_random_walk=0) — see the inline comment in default.yaml.
         # When enabled, wraps the visual estimator in VIOPoseEstimator;
         # downstream consumers see the fused pose unchanged.
         enabled: false
@@ -844,10 +799,13 @@ below — the YAML itself is the canonical reference.
         init_orientation_std_rad:   0.05
         init_bias_gyro_std:         1.0e-3
         init_bias_accel_std:        1.0e-2
+        init_scale_std:             1.0e-8     # ≈ 0; freezes s at 1.0
         bias_gyro_random_walk:      1.0e-5
         bias_accel_random_walk:     1.0e-4
+        scale_random_walk:          0.0        # 0 ⇒ scale never moves
         visual_position_std_m:      0.05
         visual_orientation_std_rad: 0.02
+        zupt_velocity_std:          0.02       # ZUPT measurement 1σ (m/s)
         gravity_w: [0.0, 0.0, -9.81]
 
     semantic:
@@ -960,6 +918,16 @@ Environment variable overrides: `DEVICE=cpu`, `RERUN_ENABLED=false`.
     python3 scripts/benchmark.py \
         --dataset data/MOT17 --split train --out data/mot17_results
 
+    # Cross-domain detector eval on VisDrone
+    python3 scripts/benchmark_visdrone.py \
+        --dataset data/VisDrone2019-MOT-train --out data/visdrone_results
+
+    # Depth / ego-pose accuracy on TUM RGB-D (indoor) or CODa (outdoor)
+    python3 scripts/eval_dataset.py --dataset tum  \
+        --sequence data/rgbd_dataset_freiburg1_room --out data/eval
+    python3 scripts/eval_dataset.py --dataset coda \
+        --sequence data/coda/seq0 --out data/eval
+
     # DPVO per-frame latency sweep (resolution × patches × stride)
     python3 scripts/benchmark_dpvo_latency.py
 
@@ -972,20 +940,26 @@ Environment variable overrides: `DEVICE=cpu`, `RERUN_ENABLED=false`.
 
 ## Project structure
 
-    perception/          Camera interface, detector, depth estimator,
-                          pose estimator (Null + DPVO), appearance
-                          extractor (Null + DINOv2), IMU interface
-                          (Null + Synthetic), TransformTree, typed config
+    perception/          Camera interface, detector, depth estimator
+                          (Depth Anything V2 / SGBM / RAFT-Stereo),
+                          pose estimator (Null + DPVO + DPV-SLAM + VIO),
+                          appearance extractor (Null + DINOv2), IMU
+                          interface (Null + Synthetic + CODa replay),
+                          semantic segmenter (Mask2Former), TransformTree,
+                          typed config
     tracking/            ByteTrack, association, motion compensation, Track
-    state_estimation/    Kalman Filter, Extended KF, NIS/NEES,
-                          IMU pre-integration, visual-inertial EKF
-                          diagnostics, IMU pre-integration (Forster 2017)
+    state_estimation/    Kalman Filter, Extended KF, NIS/NEES diagnostics,
+                          IMU pre-integration (Forster 2017), visual-
+                          inertial EKF (16-D error state, Joseph update,
+                          ZUPT, stationary init)
     world_model/         SceneGraph, ObjectState (+ position_world,
                           stability, persistent_id), spatial queries
                           (camera- and world-frame), OccupancyGridBuilder
-                          (dynamic obstacle layer), stability classification,
-                          WorldMap (long-term spatial memory + ReID
-                          re-association)
+                          (dynamic obstacle layer), Occupancy3DBuilder
+                          (sparse voxel grid), drivable_projector (IPM),
+                          RoomLayer (morphological clustering), WorldMap
+                          (long-term spatial memory + ReID re-association),
+                          SemanticMap (Kimera-Semantics back-end)
     visualization/       Rerun.io logger, OpenCV annotator
     ros2_ws/             ROS2 colcon workspace
                           src/robotics_perception_ros2/
@@ -1001,13 +975,15 @@ Environment variable overrides: `DEVICE=cpu`, `RERUN_ENABLED=false`.
                             drivable_mask_node       Image mono8 (semantic drivable mask)
                             drivable_costmap_node    OccupancyGrid (IPM-projected
                                                      drivable freespace, Nav2 fusable)
+                            semantic_map_node        PointCloud2 XYZRGB (class-coloured
+                                                     metric-semantic map)
                             health_monitor_node      DiagnosticArray
                             composite_node           single-process bundle (perf experiment)
-    scripts/             Calibration, benchmark (MOT17, DPVO latency),
-                          detector training
-    third_party/         External clones (DPVO + bundled Pangolin / DBoW2)
-                          — not committed; see DPVO setup in README
-    tests/               748 unit tests — all hardware-free; integration
+    scripts/             Calibration, MOT17/VisDrone benchmark, DPVO
+                          latency, TUM/CODa dataset eval, detector training
+    third_party/         External clones (DPVO, RAFT-Stereo) — not
+                          committed; see setup sections above
+    tests/               959 unit tests — all hardware-free; integration
                           tests marked separately
     config/              YAML configuration
 
@@ -1034,15 +1010,17 @@ gate. MOT17 ablation is in the README — small but honest positive on
 pedestrian-only data; bigger payoff expected on DanceTrack and on
 WorldMap revisit scenarios (not yet benchmarked).
 
-**Full IMU-VIO live orchestration.** The error-state EKF
+**Full IMU-VIO live orchestration.** The 16-D error-state EKF
 (`state_estimation/visual_inertial_ekf.py`) is wired through
 `VIOPoseEstimator` and selected via the shared
 `perception/pose_estimator_factory.py`. Both `launch.py` (standalone)
 and the ROS2 `pose_node` use the same factory — `/perception/odom`
 and `/tf` publish the fused pose when `vio.enabled=true`. Pre-
-integration + bias Jacobians + Joseph update all live; gravity-aligned
-initialiser and chi-square outlier rejection on the visual update
-are the remaining gaps before real-IMU deployment.
+integration + bias Jacobians + Joseph update + ZUPT + first-frame
+anchor are all live; the CODa replay backend supplies real-IMU
+samples for outdoor evaluation. The 16-D scale state and the camera-
+IMU body-frame transform are gated off pending the
+position↔orientation Jacobian work (see Deferred).
 
 **Neural stereo backend (RAFT-Stereo).** Pure-PyTorch backend slotted
 in alongside `StereoSGBMDepthEstimator` under the existing
@@ -1063,72 +1041,84 @@ Rerun + ROS2 graph) emit the costmap.
 proximity-based pose-graph loop edges (always on, no extra deps) plus
 optional DBoW2 long-term place recognition. Drift is corrected on
 revisit instead of accumulating monotonically. Drop-in via
-`pose_estimator.type: dpv_slam` — a thin subclass of
-`DPVOPoseEstimator` that flips the `LOOP_CLOSURE` /
-`CLASSIC_LOOP_CLOSURE` config flags; the whole downstream stack
-(TransformTree, SceneGraph, ROS2 pose_node) consumes the loop-corrected
-pose unchanged. The loop-closure jump is absorbed by the
-`map ← odom` transform edge. NOT addressed: monocular scale (still
-needs the Depth-Anything anchor) and dense bundle adjustment refinement.
+`pose_estimator.type: dpv_slam`; the whole downstream stack
+(TransformTree, SceneGraph, ROS2 pose_node) consumes the loop-
+corrected pose unchanged. The loop-closure jump is absorbed by the
+`map ← odom` transform edge.
+
+**Semantic SLAM (metric-semantic map).** `world_model/semantic_map.py`
+ships a persistent voxel-hashed metric-semantic map (`SemanticMap` +
+`SemanticVoxel`) — Kimera-Semantics mapping back-end (Rosinol 2020).
+Per-voxel occupancy log-odds + per-class vote-fused semantic
+distribution. CPU voxel hashing (zero extra VRAM). ROS2 publisher
+streams it as an XYZRGB `PointCloud2`; Rerun viewer renders a class-
+coloured cloud. Free-space ray-carving and loop-closure map
+deformation deferred.
 
 ### Deferred
 
-**Metric scale anchoring for DPVO.** Monocular VO has unobservable
-absolute scale — DPVO's translations are in arbitrary units until
-anchored. Depth Anything V2 already provides metric depth, so the
-calibration is feasible: at init (or via a continuous low-pass
-filter), compute the scale ratio between DPVO's reported depth and
-the median metric depth. Deferred until Phase 1 validation work
-(TUM RGB-D) provides ground truth to measure against.
+**Position↔orientation Jacobian for the VIO body-frame transform.**
+The camera-IMU extrinsic transform is loaded and ready, but the
+measurement-model Jacobian `H[0:3, T_IDX] = -[R·p_imu_cam]_× / s`
+is not wired in. Without it, every orientation update injects a
+fictitious position step via the lever arm — validated as an 8× ATE
+regression on CODa seq0 (default-off until fixed). One-flag flip on
+`VIOPoseEstimator._apply_body_frame` re-activates the path once the
+Jacobian lands. The visual-scale state observability depends on the
+same fix.
 
-**Tightly-coupled VIO backbone.** The shipped fuser is loosely-coupled
-(consumes the visual estimator's 6-DOF pose as a measurement). The
-SOTA accuracy ceiling lives with tightly-coupled VIO — OpenVINS,
+**Tightly-coupled VIO backbone.** The shipped fuser is loosely-
+coupled (consumes the visual estimator's 6-DOF pose as a measurement).
+The SOTA accuracy ceiling lives with tightly-coupled VIO — OpenVINS,
 VINS-Fusion, ORB-SLAM3+IMU. All slot into the same `PoseEstimator`
-ABC; pending a use case that exposes the loosely-coupled accuracy as
-the bottleneck.
-
-**Full semantic SLAM.** Kimera-Semantics (Rosinol 2020) or open-
-vocabulary mapping (OpenScene, ConceptGraphs 2024). Investigate fit
-on 4070Ti carefully: Kimera needs IMU + is tight on VRAM; open-vocab
-is sub-real-time, batch-only. May end up as offline map-build +
-online query rather than fully online.
-
-**C++ port of the ROS2 adapter nodes.** Multi-process Python rclpy
-caps at ~6 Hz on the reference stack (documented in "Honest performance
-notes" above). True zero-copy intra-process composition needs C++
-`ComposableNodeContainer`. Significant effort; only worth it for a
-real deployment, not for the demo / standalone pipeline.
+ABC.
 
 **Persistent room IDs across frames.** RoomLayer v1 rebuilds rooms
 each frame; IDs reshuffle when geometry changes. Persistent IDs need
 Hungarian assignment on Jaccard polygon overlap + a SLAM-grade global
-ego pose. Only useful once those land.
+ego pose.
+
+**Free-space ray-carving for the semantic map.** Currently voxels
+accumulate occupancy hits but never free; the map can't unsee a
+parked car that drives away.
 
 ---
 
 ## References
 
+    Filtering & estimation
     Kalman, R.E. (1960)              Optimal linear filter
     Welch & Bishop (2006)            Kalman filter tutorial
     Bar-Shalom et al. (2001)         Estimation with applications to
                                      tracking and navigation
+    Thrun, Burgard & Fox (2005)      Probabilistic Robotics
+    Sola (2017)                      Quaternion kinematics for the
+                                     error-state KF — arXiv:1711.02508
+
+    Detection & tracking
     Bewley et al. (2016)             SORT — tracking-by-detection
     Zhang et al. (2022)              ByteTrack — arXiv:2110.06864
     Aharon et al. (2022)             BoT-SORT — arXiv:2206.14651
-    Thrun, Burgard & Fox (2005)      Probabilistic Robotics
+    Du et al. (2023)                 StrongSORT — arXiv:2202.13514
+    Sun et al. (2022)                DanceTrack — arXiv:2111.14690
+
+    Visual / depth backbones
     Yang et al. (2024)               Depth Anything V2 — arXiv:2406.09414
-    Campos et al. (2021)             ORB-SLAM3 — arXiv:2007.11898
+    Lipson, Teed & Deng (2021)       RAFT-Stereo — arXiv:2109.07547
+    Oquab et al. (2024)              DINOv2 — arXiv:2304.07193
+    Cheng et al. (2022)              Mask2Former — arXiv:2112.01527
     Teed, Lipson & Deng (2023)       DPVO — arXiv:2208.04726
-    Foote (2013)                     tf: the transform library (ICRA)
+    Campos et al. (2021)             ORB-SLAM3 — arXiv:2007.11898
+
+    VIO / mapping
     Forster et al. (2017)            On-Manifold Pre-integration for
                                      VIO — arXiv:1512.02363
+    Geneva et al. (2020)             OpenVINS — ICRA 2020
+    Rosinol et al. (2020)            Kimera-Semantics — RA-L 2020
+    Foote (2013)                     tf: the transform library — ICRA
 
----
-
-## Hardware
-
-    CPU    AMD Ryzen 7 7700
-    GPU    NVIDIA RTX 4070 Ti  (12 GB VRAM)
-    OS     Ubuntu 22.04 (WSL2)
-    Python 3.10
+    Datasets
+    Milan et al. (2016)              MOT16 — arXiv:1603.00831
+    Sturm et al. (2012)              TUM RGB-D — IROS 2012
+    Zhang et al. (2024)              CODa: UT Campus Object Dataset
+                                     — IJRR 2024
