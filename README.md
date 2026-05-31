@@ -6,7 +6,13 @@
 [![Tests: 959](https://img.shields.io/badge/tests-959%20passing-brightgreen.svg)](#tests)
 
 <p align="center">
-  <img src="media/demo.gif" alt="Perception pipeline running on a hand-held clip — detection, tracking, depth, world-frame markers, all live" width="720">
+  <img src="media/demo.gif" alt="Husky robot driving CODa seq5 — left: rectified cam0 view, right: top-down DPV-SLAM estimate (red) vs LeGO-LOAM ground truth (green), Sim(3)-aligned" width="780">
+</p>
+<p align="center">
+  <em>CODa seq5 (Husky ground robot, UT Austin sidewalk) — left: what the
+  robot sees; right: DPV-SLAM trajectory vs LeGO-LOAM ground truth, Sim(3)
+  ATE 0.03 m over this segment. Reproduce with
+  <code>python3 scripts/render_coda_demo.py</code>.</em>
 </p>
 
 Modular, camera-only perception stack for mobile robotics — detection,
