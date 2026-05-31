@@ -1,12 +1,52 @@
 # Robotics Perception Pipeline
 
-![CI](https://github.com/peclem/robotics-perception-pipeline/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/peclem/robotics-perception-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/peclem/robotics-perception-pipeline/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Tests: 959](https://img.shields.io/badge/tests-959%20passing-brightgreen.svg)](#tests)
 
-A modular perception stack for mobile robotics. Implements camera-based
-multi-object detection, tracking, monocular ego-pose, and state estimation,
-with a probabilistic world model exposed both as a standalone Python pipeline
-and as a set of ROS2 adapter nodes for direct integration into Nav2-style
-navigation stacks.
+<p align="center">
+  <img src="media/demo.gif" alt="Perception pipeline running on a hand-held clip — detection, tracking, depth, world-frame markers, all live" width="720">
+</p>
+
+Modular, camera-only perception stack for mobile robotics — detection,
+tracking, monocular depth + VIO, semantic SLAM, world model. Same
+modules behind a standalone Python pipeline AND a parallel ROS2
+adapter graph. 959 unit tests, all hardware-free. Validated on MOT17
+(tracking), TUM RGB-D (indoor depth + pose), and CODa (outdoor
+sidewalk).
+
+➜ [Quick start](#quick-start) · [Architecture](#system-architecture) · [Benchmark results](#benchmark-results) · [Status & roadmap](#status--whats-next)
+
+---
+
+## Status & what's next
+
+**Shipped & benchmarked.** Every claim below points to a result in
+`docs/benchmark_results.md` or the Benchmark Results section.
+
+| Component | Backend | Validated on |
+|---|---|---|
+| Detection + tracking | YOLOv8n + ByteTrack + DINOv2 ReID | MOT17 (MOTA 50.7%, post-CMC-fix) |
+| Camera motion compensation | LK + affine RANSAC | MOT17-05/10/13 (IDSW down 1.3–8×) |
+| Monocular depth | Depth Anything V2 (metric) | TUM fr1/room (RMSE 0.46 m) |
+| DPV-SLAM ego-pose | DPVO + loop closure | TUM (ATE 0.33 m) + CODa seq0/5/18 |
+| Loosely-coupled VIO | 16-D error-state EKF + ZUPT + anchor | CODa seq0/5/18 (≈ baseline + ZUPT win) |
+| Semantic segmentation | Mask2Former (Cityscapes) | Live-wired, CI green |
+| Semantic SLAM | Kimera-Semantics back-end | Live-wired, CI green |
+| 2D/3D occupancy + drivable costmap | Custom + IPM | Nav2-fusable output |
+| Long-term spatial memory | DINOv2 WorldMap re-association | Synthetic + revisit fixtures |
+| ROS2 adapter graph | 11 nodes, end-to-end | Topic graph verified, ~6 Hz @ 1280×720 |
+
+**Active / next up:**
+- Position↔orientation Jacobian for the VIO body-frame transform — unlocks visual-scale state observability and extrinsic-correct fusion (Stage 1 closeout kept the plumbing default-off until this lands; see `Extensions/Deferred`).
+- Tightly-coupled VIO backbone (OpenVINS / VINS-Fusion / ORB-SLAM3+IMU) behind the existing `PoseEstimator` ABC.
+- DanceTrack CMC ablation — val data on disk; benchmark.py adapter port pending.
+- More CODa sequences (n=3 → n>5 for the outdoor-pose claim).
+
+**Explicitly off the roadmap:**
+- C++ port of the ROS2 adapter nodes — the bottleneck is perception accuracy, not transport.
+- Planning / control layers — this stack is a perception layer only; Nav2 / behaviour-tree / motor control belong downstream.
 
 ---
 
