@@ -8,12 +8,7 @@
 <p align="center">
   <img src="media/SLAM_car_demo.gif" alt="KITTI seq — top: DPV-SLAM estimate" width="780">
 </p>
-<p align="center">
-  <em>CODa seq5 (Husky ground robot, UT Austin sidewalk) — left: what the
-  robot sees; right: DPV-SLAM trajectory vs LeGO-LOAM ground truth, Sim(3)
-  ATE 0.03 m over this segment. Reproduce with
-  <code>python3 scripts/render_coda_demo.py</code>.</em>
-</p>
+
 
 Modular, camera-only perception stack for mobile robotics — detection,
 tracking, monocular depth + VIO, semantic SLAM, world model. Same
