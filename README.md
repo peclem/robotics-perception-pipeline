@@ -6,7 +6,7 @@
 [![Tests: 959](https://img.shields.io/badge/tests-959%20passing-brightgreen.svg)](#tests)
 
 <p align="center">
-  <img src="media/demo.gif" alt="Husky robot driving CODa seq5 — left: rectified cam0 view, right: top-down DPV-SLAM estimate (red) vs LeGO-LOAM ground truth (green), Sim(3)-aligned" width="780">
+  <img src="media/SLAM_car_demo.gif" alt="KITTI seq — top: DPV-SLAM estimate" width="780">
 </p>
 <p align="center">
   <em>CODa seq5 (Husky ground robot, UT Austin sidewalk) — left: what the
